@@ -8,7 +8,7 @@ Subject: [PATCH] support updated minecraft version string formats
 * preserve separator counting for non-patch version formats using dot characters
 
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
-index 56f4156079642a56f53f95ee6e9b706ce5d9569f..1f2cf9fd34e610ebe3088fd9dc9d2b9452446cbc 100644
+index 56f4156079642a56f53f95ee6e9b706ce5d9569f..e7bf4de8371c23270d2e69203209f739287b6a29 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
 @@ -7,6 +7,8 @@ public class McVersion implements Comparable<McVersion> {
@@ -20,7 +20,7 @@ index 56f4156079642a56f53f95ee6e9b706ce5d9569f..1f2cf9fd34e610ebe3088fd9dc9d2b94
      static {
          final int currentMajor = Integer.parseInt(Bukkit.getBukkitVersion().split("\\.")[0]);
          final int currentMinor =
-@@ -18,6 +20,23 @@ public class McVersion implements Comparable<McVersion> {
+@@ -18,6 +20,29 @@ public class McVersion implements Comparable<McVersion> {
  
          CURRENT_VERSION = new McVersion(currentMajor, currentMinor, currentPatch);
      }
@@ -34,9 +34,15 @@ index 56f4156079642a56f53f95ee6e9b706ce5d9569f..1f2cf9fd34e610ebe3088fd9dc9d2b94
 +
 +		final String[] parts = mcVersionPart.split("\\.");
 +
-+		final int currentMajor = Integer.parseInt(parts[0]);
-+		final int currentMinor = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
-+		final int currentPatch = parts.length > 2 ? Integer.parseInt(parts[2]) : 0;
++		int currentMajor = Integer.parseInt(parts[0]);
++		int currentMinor = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
++		int currentPatch = parts.length > 2 ? Integer.parseInt(parts[2]) : 0;
++
++		if (currentMajor > 1) {
++			currentPatch = currentMinor;
++			currentMinor = currentMajor;
++			currentMajor = 1;
++		}
 +
 +		CURRENT_VERSION = new McVersion(currentMajor, currentMinor, currentPatch);
 +	}
@@ -44,29 +50,10 @@ index 56f4156079642a56f53f95ee6e9b706ce5d9569f..1f2cf9fd34e610ebe3088fd9dc9d2b94
  
      private static int countColons(final String string) {
          int count = 0;
-@@ -128,7 +147,11 @@ public class McVersion implements Comparable<McVersion> {
-      * @since 4.0.0
-      */
-     public static boolean supports(int minorNumber) {
--        return CURRENT_VERSION.isAtLeast(1, minorNumber);
-+		// surf start - support new version format
-+//        return CURRENT_VERSION.isAtLeast(1, minorNumber);
-+		if (CURRENT_VERSION.getMajor() > 1) return true;
-+		return CURRENT_VERSION.isAtLeast(1, minorNumber);
-+		// surf end - support new version format
-     }
- 
-     /**
-@@ -141,6 +164,10 @@ public class McVersion implements Comparable<McVersion> {
-      * @since 4.0.0
+@@ -142,5 +167,5 @@ public class McVersion implements Comparable<McVersion> {
       */
      public static boolean supports(int minorNumber, int patchNumber) {
--        return CURRENT_VERSION.isAtLeast(1, minorNumber, patchNumber);
+         return CURRENT_VERSION.isAtLeast(1, minorNumber, patchNumber);
 -    }
-+		// surf start - support new version format
-+//        return CURRENT_VERSION.isAtLeast(1, minorNumber, patchNumber);
-+		if (CURRENT_VERSION.getMajor() > 1) return true;
-+		return CURRENT_VERSION.isAtLeast(1, minorNumber, patchNumber);
-+		// surf end - support new version format
 +	}
  }
