@@ -73,7 +73,7 @@ index 49791a036137c5519aaf81f1853be846f33d5719..69be9df4e327690761a31f1a121fcc9d
  
      private static Class<?> getClassOrNull(String className) {
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
-index 7ced2ad4da1a3dd9c50ba3e4c91486690d078bb8..625dc333073a273b2cc0be15dee70c8412936f21 100644
+index 7ced2ad4da1a3dd9c50ba3e4c91486690d078bb8..8bb5e8162550c4da987fa20ab78cfc00cac43c61 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
 @@ -167,6 +167,8 @@ public final class ReflectionUtils {
@@ -100,7 +100,7 @@ index 7ced2ad4da1a3dd9c50ba3e4c91486690d078bb8..625dc333073a273b2cc0be15dee70c84
 +		try {
 +			connection = lookup.findGetter(
 +				ENTITY_PLAYER,
-+				v(21, 3, "f").v(20, "c").v(17, "b").v(21, 6, "g").orElse("connection"),
++				v(26, "connection").v(21, 3, "f").v(20, "c").v(17, "b").v(21, 6, "g").orElse("connection"),
 +				playerConnection);
 +
 +			getHandle = lookup.findVirtual(CRAFT_PLAYER, "getHandle", MethodType.methodType(ENTITY_PLAYER));
