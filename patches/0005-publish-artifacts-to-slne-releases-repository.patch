@@ -1,16 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: twisti <76837088+twisti-dev@users.noreply.github.com>
-Date: Thu, 14 May 2026 13:39:27 +0200
-Subject: [PATCH] ublish artifacts to slne releases repository
+Date: Thu, 14 May 2026 20:21:08 +0200
+Subject: [PATCH] publish artifacts to slne releases repository
 
 
 diff --git a/build-logic/conventions/src/main/kotlin/Publish.kt b/build-logic/conventions/src/main/kotlin/Publish.kt
-index 8a3078575c8cac1c3143b1319c0e54a3bdee313a..206cad644f5020cf19eb6fef58db514b57f8e919 100644
+index 8a3078575c8cac1c3143b1319c0e54a3bdee313a..f27bc11df460e859c2d08246f6301fadcc4a3e85 100644
 --- a/build-logic/conventions/src/main/kotlin/Publish.kt
 +++ b/build-logic/conventions/src/main/kotlin/Publish.kt
-@@ -1,14 +1,40 @@
+@@ -1,14 +1,47 @@
  import com.vanniktech.maven.publish.MavenPublishBaseExtension
  import org.gradle.api.Project
++import org.gradle.api.plugins.JavaPluginExtension
 +import org.gradle.api.publish.PublishingExtension
 +import org.gradle.api.publish.maven.MavenPublication
  import org.gradle.kotlin.dsl.configure
@@ -37,6 +38,12 @@ index 8a3078575c8cac1c3143b1319c0e54a3bdee313a..206cad644f5020cf19eb6fef58db514b
 +        }
      }
 +    plugins.apply("maven-publish")
++    plugins.apply("java")
++
++    configure<JavaPluginExtension> {
++        withJavadocJar()
++        withSourcesJar()
++    }
 +
 +    configure<PublishingExtension> {
 +        repositories {
@@ -76,3 +83,35 @@ index e027a85f1badebeabeae96933fc4f0a46ebccfb0..97ba23dd12be3768cd8f847c844eb7d4
 +version = "1.0.0"
  // surf end - update build
 \ No newline at end of file
+diff --git a/inventory-framework-api/src/main/java/me/devnatan/inventoryframework/component/Pagination.java b/inventory-framework-api/src/main/java/me/devnatan/inventoryframework/component/Pagination.java
+index a3b97ac41a41bd1401b30dc53981eb4aea5f26d3..233567974c850757aaa1141a0b990cde9af703d1 100644
+--- a/inventory-framework-api/src/main/java/me/devnatan/inventoryframework/component/Pagination.java
++++ b/inventory-framework-api/src/main/java/me/devnatan/inventoryframework/component/Pagination.java
+@@ -275,12 +275,11 @@ public interface Pagination extends ComponentComposition, StateValue {
+          * <p>Slots are traversed from top to bottom within each column,
+          * and columns are processed from left to right.</p>
+          *
+-         * <p>This is used for vertical progression:
++         * <p>This is used for vertical progression:</p>
+          * <pre>
+          * (r0,c0), (r1,c0), (r2,c0), ...
+          * (r0,c1), (r1,c1), (r2,c1), ...
+          * </pre>
+-         * </p>
+          */
+         VERTICAL,
+ 
+@@ -290,12 +289,11 @@ public interface Pagination extends ComponentComposition, StateValue {
+          * <p>Slots are traversed from left to right within each row,
+          * and rows are processed from top to bottom.</p>
+          *
+-         * <p>This is the traditional horizontal progression:
++         * <p>This is the traditional horizontal progression:</p>
+          * <pre>
+          * (r0,c0), (r0,c1), (r0,c2), ...
+          * (r1,c0), (r1,c1), (r1,c2), ...
+          * </pre>
+-         * </p>
+          */
+         HORIZONTAL,
+ 
