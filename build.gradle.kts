@@ -1,5 +1,6 @@
 plugins {
-    kotlin("jvm") version "2.3.20"
+    java
+    id("ca.stellardrift.gitpatcher") version "2.0.0"
 }
 
 group = "dev.slne.forks.inventoryframework"
@@ -10,13 +11,8 @@ repositories {
 }
 
 dependencies {
-    testImplementation(kotlin("test"))
 }
 
-kotlin {
-    jvmToolchain(25)
-}
-
-tasks.test {
-    useJUnitPlatform()
+java {
+    toolchain.languageVersion.set(JavaLanguageVersion.of(25))
 }
