@@ -8,51 +8,65 @@ Subject: [PATCH] support updated minecraft version string formats
 * preserve separator counting for non-patch version formats using dot characters
 
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
-index 56f4156079642a56f53f95ee6e9b706ce5d9569f..05e06e0b5314cf3156bcf1cc33204a79ea921eac 100644
+index 56f4156079642a56f53f95ee6e9b706ce5d9569f..1f2cf9fd34e610ebe3088fd9dc9d2b9452446cbc 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
-@@ -20,6 +20,7 @@ public class McVersion implements Comparable<McVersion> {
-     }
+@@ -7,6 +7,8 @@ public class McVersion implements Comparable<McVersion> {
  
-     private static int countColons(final String string) {
-+		if (true) return countColonsForUpdatedVersionFormat(string); // surf - support new version format
-         int count = 0;
-         char[] arr = string.toCharArray();
-         for (int i = 0; i < string.length(); i++) {
-@@ -30,6 +31,36 @@ public class McVersion implements Comparable<McVersion> {
-         return count;
-     }
+     private static final McVersion CURRENT_VERSION;
  
 +	// surf start - support new version format
-+	private static int countColonsForUpdatedVersionFormat(String version) {
-+		if (version.contains(".build.")) {
-+			String mcVersionPart = version.substring(0, version.indexOf(".build."));
-+			return hasNumericPatchVersionPart(mcVersionPart) ? 3 : 2;
-+		}
++	/*
+     static {
+         final int currentMajor = Integer.parseInt(Bukkit.getBukkitVersion().split("\\.")[0]);
+         final int currentMinor =
+@@ -18,6 +20,23 @@ public class McVersion implements Comparable<McVersion> {
+ 
+         CURRENT_VERSION = new McVersion(currentMajor, currentMinor, currentPatch);
+     }
++	 */
++	static {
++		final String version = Bukkit.getBukkitVersion();
 +
-+		if (hasNumericPatchVersionPart(version)) {
-+			return 3;
-+		}
++		final String mcVersionPart = version.contains(".build.")
++			? version.substring(0, version.indexOf(".build."))
++			: version.split("-", 2)[0];
 +
-+		return (int) version.chars()
-+			.filter(ch -> ch == '.')
-+			.count();
-+	}
++		final String[] parts = mcVersionPart.split("\\.");
 +
-+	private static boolean hasNumericPatchVersionPart(String version) {
-+		String mcVersionPart = version.split("-", 2)[0];
-+		String[] parts = mcVersionPart.split("\\.");
++		final int currentMajor = Integer.parseInt(parts[0]);
++		final int currentMinor = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
++		final int currentPatch = parts.length > 2 ? Integer.parseInt(parts[2]) : 0;
 +
-+		return parts.length >= 3
-+			&& !parts[0].isEmpty()
-+			&& !parts[1].isEmpty()
-+			&& !parts[2].isEmpty()
-+			&& parts[0].chars().allMatch(Character::isDigit)
-+			&& parts[1].chars().allMatch(Character::isDigit)
-+			&& parts[2].chars().allMatch(Character::isDigit);
++		CURRENT_VERSION = new McVersion(currentMajor, currentMinor, currentPatch);
 +	}
 +	// surf end - support new version format
-+
-     private final int major;
-     private final int minor;
-     private final int patch;
+ 
+     private static int countColons(final String string) {
+         int count = 0;
+@@ -128,7 +147,11 @@ public class McVersion implements Comparable<McVersion> {
+      * @since 4.0.0
+      */
+     public static boolean supports(int minorNumber) {
+-        return CURRENT_VERSION.isAtLeast(1, minorNumber);
++		// surf start - support new version format
++//        return CURRENT_VERSION.isAtLeast(1, minorNumber);
++		if (CURRENT_VERSION.getMajor() > 1) return true;
++		return CURRENT_VERSION.isAtLeast(1, minorNumber);
++		// surf end - support new version format
+     }
+ 
+     /**
+@@ -141,6 +164,10 @@ public class McVersion implements Comparable<McVersion> {
+      * @since 4.0.0
+      */
+     public static boolean supports(int minorNumber, int patchNumber) {
+-        return CURRENT_VERSION.isAtLeast(1, minorNumber, patchNumber);
+-    }
++		// surf start - support new version format
++//        return CURRENT_VERSION.isAtLeast(1, minorNumber, patchNumber);
++		if (CURRENT_VERSION.getMajor() > 1) return true;
++		return CURRENT_VERSION.isAtLeast(1, minorNumber, patchNumber);
++		// surf end - support new version format
++	}
+ }

@@ -1,16 +1,23 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: twisti <76837088+twisti-dev@users.noreply.github.com>
 Date: Thu, 14 May 2026 12:31:18 +0200
-Subject: [PATCH] build: update project build configuration for Java 25
+Subject: [PATCH] # This is a combination of 2 commits. # This is the 1st
+ commit message:
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
+
+build: update project build configuration for Java 25
 
 * update Gradle wrapper from 8.14.3 to 9.5.1
 * update Java source, target, and toolchain versions to 25
 * spigot: 1.20.6-R0.1-SNAPSHOT → 1.21.11-R0.1-SNAPSHOT
 * paperSpigot: 1.20.6-R0.1-SNAPSHOT → 1.21.11-R0.1-SNAPSHOT
 * kotlin: 1.9.20 → 2.3.21
+
+# The commit message #2 will be skipped:
+
+# fixup! build: update project build configuration for Java 25
 
 diff --git a/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt b/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt
 index e22d45849eba0a4b3407257af328023c7659297f..3d86e078fe5bb68f925e592e7fb48db846f3b186 100644
@@ -26,11 +33,15 @@ index e22d45849eba0a4b3407257af328023c7659297f..3d86e078fe5bb68f925e592e7fb48db8
  
          with(tasks) {
 diff --git a/build.gradle.kts b/build.gradle.kts
-index 8a049f55ec73974fbf04e914d5c2435bca80e2f4..e027a85f1badebeabeae96933fc4f0a46ebccfb0 100644
+index 8a049f55ec73974fbf04e914d5c2435bca80e2f4..1cabfb92d6ca2f2b90a666757cb93745681c8210 100644
 --- a/build.gradle.kts
 +++ b/build.gradle.kts
-@@ -4,6 +4,8 @@ plugins {
-     alias(libs.plugins.publish) apply false
+@@ -1,9 +1,11 @@
+ plugins {
+     alias(libs.plugins.spotless) apply false
+     alias(libs.plugins.kotlin) apply false
+-    alias(libs.plugins.publish) apply false
++//    alias(libs.plugins.publish) apply false // surf - update publication
  }
  
 +// surf start - update build
@@ -38,7 +49,7 @@ index 8a049f55ec73974fbf04e914d5c2435bca80e2f4..e027a85f1badebeabeae96933fc4f0a4
  group = "me.devnatan"
  version = property("version")
      .toString()
-@@ -21,4 +23,6 @@ fun Project.nextGitTag(): String {
+@@ -21,4 +23,14 @@ fun Project.nextGitTag(): String {
      val minor = versionParts.getOrNull(1)?.toIntOrNull() ?: 0
  
      return "$major.${minor + 1}.0-SNAPSHOT"
@@ -46,6 +57,14 @@ index 8a049f55ec73974fbf04e914d5c2435bca80e2f4..e027a85f1badebeabeae96933fc4f0a4
 \ No newline at end of file
 +}
 + */
++
++val rootProps = java.util.Properties().apply {
++    rootProject.file("../gradle.properties").inputStream().use(::load)
++}
++
++group = rootProps.getProperty("group")
++version = rootProps.getProperty("version")
++println("Building Inventory Framework: $version")
 +// surf end - update build
 \ No newline at end of file
 diff --git a/examples/minestom/build.gradle.kts b/examples/minestom/build.gradle.kts

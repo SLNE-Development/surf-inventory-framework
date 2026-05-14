@@ -10,6 +10,9 @@ repositories {
 dependencies {
 }
 
+group = findProperty("group") as String
+version = findProperty("version") as String
+
 gitPatcher.patchedRepos {
     register("inventory-framework") {
         submodule = "upstream"
@@ -36,11 +39,12 @@ listOf("shadowJar", "publish").forEach { taskName ->
 
         dependsOn("applyPatches")
         workingDir = layout.projectDirectory.dir("inventory-framework").asFile
+        val args = listOf(taskName)
 
         if (isWindows) {
-            commandLine("cmd", "/c", gradlew, taskName)
+            commandLine("cmd", "/c", gradlew, *args.toTypedArray())
         } else {
-            commandLine(gradlew, taskName)
+            commandLine(gradlew, *args.toTypedArray())
         }
     }
 }

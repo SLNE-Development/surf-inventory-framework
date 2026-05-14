@@ -62,27 +62,6 @@ index 8a3078575c8cac1c3143b1319c0e54a3bdee313a..f27bc11df460e859c2d08246f6301fad
 +    }
 +    // surf end - update publication
  }
-diff --git a/build.gradle.kts b/build.gradle.kts
-index e027a85f1badebeabeae96933fc4f0a46ebccfb0..97ba23dd12be3768cd8f847c844eb7d433bead50 100644
---- a/build.gradle.kts
-+++ b/build.gradle.kts
-@@ -1,7 +1,7 @@
- plugins {
-     alias(libs.plugins.spotless) apply false
-     alias(libs.plugins.kotlin) apply false
--    alias(libs.plugins.publish) apply false
-+//    alias(libs.plugins.publish) apply false // surf - update publication
- }
- 
- // surf start - update build
-@@ -25,4 +25,6 @@ fun Project.nextGitTag(): String {
-     return "$major.${minor + 1}.0-SNAPSHOT"
- }
-  */
-+group = "dev.slne.forks.inventoryframework"
-+version = "1.0.0"
- // surf end - update build
-\ No newline at end of file
 diff --git a/inventory-framework-api/src/main/java/me/devnatan/inventoryframework/component/Pagination.java b/inventory-framework-api/src/main/java/me/devnatan/inventoryframework/component/Pagination.java
 index a3b97ac41a41bd1401b30dc53981eb4aea5f26d3..233567974c850757aaa1141a0b990cde9af703d1 100644
 --- a/inventory-framework-api/src/main/java/me/devnatan/inventoryframework/component/Pagination.java
