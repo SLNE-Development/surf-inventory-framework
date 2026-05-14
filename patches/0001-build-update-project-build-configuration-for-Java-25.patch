@@ -1,0 +1,152 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: twisti <76837088+twisti-dev@users.noreply.github.com>
+Date: Thu, 14 May 2026 12:31:18 +0200
+Subject: [PATCH] build: update project build configuration for Java 25
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* update Gradle wrapper from 8.14.3 to 9.5.1
+* update Java source, target, and toolchain versions to 25
+* spigot: 1.20.6-R0.1-SNAPSHOT → 1.21.11-R0.1-SNAPSHOT
+* paperSpigot: 1.20.6-R0.1-SNAPSHOT → 1.21.11-R0.1-SNAPSHOT
+* kotlin: 1.9.20 → 2.3.21
+
+diff --git a/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt b/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt
+index e22d45849eba0a4b3407257af328023c7659297f..3d86e078fe5bb68f925e592e7fb48db846f3b186 100644
+--- a/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt
++++ b/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt
+@@ -38,7 +38,7 @@ internal class LibraryConventionPlugin : Plugin<Project> {
+         pluginManager.apply("java-library")
+ 
+         extensions.configure<JavaPluginExtension> {
+-            sourceCompatibility = JavaVersion.VERSION_1_8
++            sourceCompatibility = JavaVersion.VERSION_25 // surf - update build
+         }
+ 
+         with(tasks) {
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 8a049f55ec73974fbf04e914d5c2435bca80e2f4..e027a85f1badebeabeae96933fc4f0a46ebccfb0 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -4,6 +4,8 @@ plugins {
+     alias(libs.plugins.publish) apply false
+ }
+ 
++// surf start - update build
++/*
+ group = "me.devnatan"
+ version = property("version")
+     .toString()
+@@ -21,4 +23,6 @@ fun Project.nextGitTag(): String {
+     val minor = versionParts.getOrNull(1)?.toIntOrNull() ?: 0
+ 
+     return "$major.${minor + 1}.0-SNAPSHOT"
+-}
+\ No newline at end of file
++}
++ */
++// surf end - update build
+\ No newline at end of file
+diff --git a/examples/minestom/build.gradle.kts b/examples/minestom/build.gradle.kts
+index 9bf07dd6105f107c39a1f1d63ad6e1fa0016ea43..37fa403433d24f89da44cb149711d03f23cc666d 100644
+--- a/examples/minestom/build.gradle.kts
++++ b/examples/minestom/build.gradle.kts
+@@ -16,9 +16,9 @@ tasks.shadowJar {
+ }
+ 
+ java {
+-    targetCompatibility = JavaVersion.VERSION_21
++    targetCompatibility = JavaVersion.VERSION_25 // surf - update build
+     toolchain {
+-        languageVersion.set(JavaLanguageVersion.of(21))
++        languageVersion.set(JavaLanguageVersion.of(25)) // surf - update build
+     }
+ }
+ 
+diff --git a/examples/paper/build.gradle.kts b/examples/paper/build.gradle.kts
+index 161eb1a343cb2876fd0b413418254dba23028102..41bd0c254b0ce628224f0fc6be86552df565d6bd 100644
+--- a/examples/paper/build.gradle.kts
++++ b/examples/paper/build.gradle.kts
+@@ -50,6 +50,6 @@ bukkit {
+ 
+ java {
+     toolchain {
+-        languageVersion.set(JavaLanguageVersion.of(21))
++        languageVersion.set(JavaLanguageVersion.of(25)) // surf - update build
+     }
+ }
+\ No newline at end of file
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index 02bc15cca1256e96938178a878dadf8b007333d8..89850fa8d67a4ff08fbe5997ab94625e50c0cf19 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -3,12 +3,12 @@ jetbrains-annotations = "26.0.2"
+ # Do not update Spigot/Paper to 1.21, InventoryView changed from class to interface type
+ # Dynamic Title Update feature throws IncompatibleClassChangeError due to that
+ # Feel free to implement a workaround on InventoryUpdate.java if u need to use a 1.21+ specific API
+-spigot = "1.20.6-R0.1-SNAPSHOT"
+-paperSpigot = "1.20.6-R0.1-SNAPSHOT"
++spigot = "1.21.11-R0.1-SNAPSHOT" # surf - update build
++paperSpigot = "1.21.11-R0.1-SNAPSHOT" # surf - update build
+ junit = "6.0.0"
+ mockito = "4.11.0"
+ adventure-api = "4.25.0"
+-kotlin = "1.9.20"
++kotlin = "2.3.21" # surf - update build
+ plugin-shadowjar = "8.3.8"
+ plugin-spotless = "7.2.1"
+ plugin-bukkit = "0.7.1"
+diff --git a/gradle/wrapper/gradle-wrapper.properties b/gradle/wrapper/gradle-wrapper.properties
+index d4081da476bb3ee087bb538a0bb6718958af29a4..5dd3c0121b39a12d2e64dc76e5ed49b822a375ad 100644
+--- a/gradle/wrapper/gradle-wrapper.properties
++++ b/gradle/wrapper/gradle-wrapper.properties
+@@ -1,6 +1,6 @@
+ distributionBase=GRADLE_USER_HOME
+ distributionPath=wrapper/dists
+-distributionUrl=https\://services.gradle.org/distributions/gradle-8.14.3-bin.zip
++distributionUrl=https\://services.gradle.org/distributions/gradle-9.5.1-bin.zip
+ networkTimeout=10000
+ validateDistributionUrl=true
+ zipStoreBase=GRADLE_USER_HOME
+diff --git a/inventory-framework-api/build.gradle.kts b/inventory-framework-api/build.gradle.kts
+index 5ba17ff07cf3507cf26bb3f4820a9420b76da996..b6fa54dfa85d258e3221cba4b1e1c48716afab82 100644
+--- a/inventory-framework-api/build.gradle.kts
++++ b/inventory-framework-api/build.gradle.kts
+@@ -14,5 +14,5 @@ dependencies {
+ 
+ kotlin {
+     explicitApi()
+-    jvmToolchain(8)
++    jvmToolchain(25) // surf - update build
+ }
+\ No newline at end of file
+diff --git a/inventory-framework-platform-minestom/build.gradle.kts b/inventory-framework-platform-minestom/build.gradle.kts
+index 52a1b59827433e2ee37f78a7097c0ff0f1322c39..b796e06fcc601aed2d26df5fec6bf3b304f2ef36 100644
+--- a/inventory-framework-platform-minestom/build.gradle.kts
++++ b/inventory-framework-platform-minestom/build.gradle.kts
+@@ -26,8 +26,8 @@ tasks.shadowJar {
+ }
+ 
+ java {
+-    targetCompatibility = JavaVersion.VERSION_21
++    targetCompatibility = JavaVersion.VERSION_25 // surf - update build
+     toolchain {
+-        languageVersion.set(JavaLanguageVersion.of(21))
++        languageVersion.set(JavaLanguageVersion.of(25)) // surf - update build
+     }
+ }
+\ No newline at end of file
+diff --git a/inventory-framework-platform-paper/build.gradle.kts b/inventory-framework-platform-paper/build.gradle.kts
+index 8c4131015d401c05264c8f73050b588c0cc04eb3..c1d7ff0250969511f8ea2a1d80682603f48615c6 100644
+--- a/inventory-framework-platform-paper/build.gradle.kts
++++ b/inventory-framework-platform-paper/build.gradle.kts
+@@ -13,7 +13,7 @@ dependencies {
+ }
+ 
+ java {
+-    targetCompatibility = JavaVersion.VERSION_21
++    targetCompatibility = JavaVersion.VERSION_25 // surf - update build
+ }
+ 
+ tasks.shadowJar {

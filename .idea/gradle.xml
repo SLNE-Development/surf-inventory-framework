@@ -4,10 +4,50 @@
   <component name="GradleSettings">
     <option name="linkedExternalProjectsSettings">
       <GradleProjectSettings>
+        <compositeConfiguration>
+          <compositeBuild compositeDefinitionSource="SCRIPT">
+            <builds>
+              <build path="$PROJECT_DIR$/inventory-framework/build-logic" name="build-logic">
+                <projects>
+                  <project path="$PROJECT_DIR$/inventory-framework/build-logic" />
+                  <project path="$PROJECT_DIR$/inventory-framework/build-logic/conventions" />
+                </projects>
+              </build>
+              <build path="$PROJECT_DIR$/inventory-framework" name="inventory-framework">
+                <projects>
+                  <project path="$PROJECT_DIR$/inventory-framework" />
+                  <project path="$PROJECT_DIR$/inventory-framework/examples/minestom" />
+                  <project path="$PROJECT_DIR$/inventory-framework/examples/paper" />
+                  <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-anvil-input" />
+                  <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-api" />
+                  <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-core" />
+                  <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-platform" />
+                  <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-platform-bukkit" />
+                  <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-platform-minestom" />
+                  <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-platform-paper" />
+                  <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-test" />
+                </projects>
+              </build>
+            </builds>
+          </compositeBuild>
+        </compositeConfiguration>
         <option name="externalProjectPath" value="$PROJECT_DIR$" />
         <option name="modules">
           <set>
             <option value="$PROJECT_DIR$" />
+            <option value="$PROJECT_DIR$/inventory-framework" />
+            <option value="$PROJECT_DIR$/inventory-framework/build-logic" />
+            <option value="$PROJECT_DIR$/inventory-framework/build-logic/conventions" />
+            <option value="$PROJECT_DIR$/inventory-framework/examples/minestom" />
+            <option value="$PROJECT_DIR$/inventory-framework/examples/paper" />
+            <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-anvil-input" />
+            <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-api" />
+            <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-core" />
+            <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-platform" />
+            <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-platform-bukkit" />
+            <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-platform-minestom" />
+            <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-platform-paper" />
+            <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-test" />
           </set>
         </option>
         <option name="myGradleHome" value="" />

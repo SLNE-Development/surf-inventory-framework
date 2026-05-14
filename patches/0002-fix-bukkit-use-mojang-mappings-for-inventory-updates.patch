@@ -1,0 +1,125 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: twisti <76837088+twisti-dev@users.noreply.github.com>
+Date: Thu, 14 May 2026 12:50:40 +0200
+Subject: [PATCH] =?UTF-8?q?=F0=9F=90=9B=20fix(bukkit):=20use=20mojang=20ma?=
+ =?UTF-8?q?ppings=20for=20inventory=20updates?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/InventoryUpdate.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/InventoryUpdate.java
+index 49791a036137c5519aaf81f1853be846f33d5719..69be9df4e327690761a31f1a121fcc9d82eec0f5 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/InventoryUpdate.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/InventoryUpdate.java
+@@ -71,6 +71,8 @@ public final class InventoryUpdate {
+     public static final Object[] DUMMY_COLOR_MODIFIERS = new Object[0];
+ 
+     static {
++		// surf start - update to mojang mappings
++		/*
+         // Initialize classes.
+         CHAT_MESSAGE = SUPPORTS_19 ? null : ReflectionUtils.getNMSClass("network.chat", "ChatMessage");
+         PACKET_PLAY_OUT_OPEN_WINDOW = ReflectionUtils.getNMSClass("network.protocol.game", "PacketPlayOutOpenWindow");
+@@ -112,6 +114,50 @@ public final class InventoryUpdate {
+         activeContainer =
+                 getField(ENTITY_PLAYER, CONTAINER, "activeContainer", "bR", "bV", "bW", "bU", "bP", "containerMenu");
+         windowId = getField(CONTAINER, int.class, "windowId", "j", "containerId");
++		 */
++
++		// Initialize classes.
++		CHAT_MESSAGE = SUPPORTS_19 ? null : ReflectionUtils.getNMSClass("network.chat", "TranslatableComponent");
++		PACKET_PLAY_OUT_OPEN_WINDOW = ReflectionUtils.getNMSClass("network.protocol.game", "ClientboundOpenScreenPacket");
++		I_CHAT_BASE_COMPONENT = ReflectionUtils.getNMSClass("network.chat", "Component");
++		// Check if we use containers, otherwise, can throw errors on older versions.
++		CONTAINERS = useContainers() ? ReflectionUtils.getNMSClass("world.inventory", "MenuType") : null;
++		CONTAINER = ReflectionUtils.getNMSClass("world.inventory", "AbstractContainerMenu");
++		I_CHAT_MUTABLE_COMPONENT =
++			SUPPORTS_19 ? ReflectionUtils.getNMSClass("network.chat", "MutableComponent") : null;
++		MINECRAFT_MENU_TYPE = getClassOrNull("net.minecraft.world.inventory.MenuType");
++
++		// Initialize methods.
++		getBukkitView = getMethod(CONTAINER, "getBukkitView", MethodType.methodType(InventoryView.class));
++		literal = SUPPORTS_19
++			? getMethod(
++			I_CHAT_BASE_COMPONENT, "literal", MethodType.methodType(I_CHAT_MUTABLE_COMPONENT, String.class), true)
++			: null;
++
++		final Class<?> paperAdventure = getClassOrNull("io.papermc.paper.adventure.PaperAdventure");
++		asVanilla = paperAdventure == null
++			? null
++			: getMethod(
++			paperAdventure,
++			"asVanilla",
++			MethodType.methodType(
++				getClassOrNull("net.minecraft.network.chat.Component"),
++				getClassOrNull("net.kyori.adventure.text.Component")),
++			true);
++
++		// Initialize constructors.
++		chatMessage = SUPPORTS_19 ? null : getConstructor(CHAT_MESSAGE, String.class, Object[].class);
++		packetPlayOutOpenWindow = (useContainers())
++			? getConstructor(PACKET_PLAY_OUT_OPEN_WINDOW, int.class, CONTAINERS, I_CHAT_BASE_COMPONENT)
++			:
++			// Older versions use String instead of Containers, and require an int for the inventory size.
++			getConstructor(PACKET_PLAY_OUT_OPEN_WINDOW, int.class, String.class, I_CHAT_BASE_COMPONENT, int.class);
++
++		// Initialize fields.
++		activeContainer =
++			getField(ENTITY_PLAYER, CONTAINER, "activeContainer", "bR", "bV", "bW", "bU", "bP", "containerMenu");
++		windowId = getField(CONTAINER, int.class, "windowId", "j", "containerId");
++		// surf end - update to mojang mappings
+     }
+ 
+     private static Class<?> getClassOrNull(String className) {
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
+index 7ced2ad4da1a3dd9c50ba3e4c91486690d078bb8..625dc333073a273b2cc0be15dee70c8412936f21 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
+@@ -167,6 +167,8 @@ public final class ReflectionUtils {
+     public static final Class<?> ENTITY_PLAYER;
+ 
+     static {
++		// surf - update to mojang mappings
++		/*
+         ENTITY_PLAYER = getNMSClass("server.level", "EntityPlayer");
+         CRAFT_PLAYER = getCraftClass("entity.CraftPlayer");
+         Class<?> playerConnection = getNMSClass("server.network", "PlayerConnection");
+@@ -196,6 +198,37 @@ public final class ReflectionUtils {
+         PLAYER_CONNECTION = connection;
+         SEND_PACKET = sendPacket;
+         GET_HANDLE = getHandle;
++		 */
++		ENTITY_PLAYER = getNMSClass("server.level", "ServerPlayer");
++		CRAFT_PLAYER = getCraftClass("entity.CraftPlayer");
++		Class<?> playerConnection = getNMSClass("server.network", "ServerGamePacketListenerImpl");
++
++		MethodHandles.Lookup lookup = MethodHandles.lookup();
++		MethodHandle sendPacket = null, getHandle = null, connection = null;
++
++		try {
++			connection = lookup.findGetter(
++				ENTITY_PLAYER,
++				v(21, 3, "f").v(20, "c").v(17, "b").v(21, 6, "g").orElse("connection"),
++				playerConnection);
++
++			getHandle = lookup.findVirtual(CRAFT_PLAYER, "getHandle", MethodType.methodType(ENTITY_PLAYER));
++
++			final VersionHandler<String> methodVersion =
++				v(21, "send").v(20, "b").v(18, "a");
++
++			sendPacket = lookup.findVirtual(
++				playerConnection,
++				methodVersion.orElse("send"),
++				MethodType.methodType(void.class, getNMSClass("network.protocol", "Packet")));
++		} catch (NoSuchMethodException | NoSuchFieldException | IllegalAccessException ex) {
++			ex.printStackTrace();
++		}
++
++		PLAYER_CONNECTION = connection;
++		SEND_PACKET = sendPacket;
++		GET_HANDLE = getHandle;
++		// surf end - update to mojang mappings
+     }
+ 
+     public static boolean supportsMC1202() {

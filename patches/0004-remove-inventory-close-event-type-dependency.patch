@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: twisti <76837088+twisti-dev@users.noreply.github.com>
+Date: Thu, 14 May 2026 12:58:50 +0200
+Subject: [PATCH] remove inventory close event type dependency
+
+* change CloseContext closeOrigin field type from InventoryCloseEvent to Object
+* remove InventoryCloseEvent cast when creating close contexts in BukkitElementFactory
+
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
+index a4d4338aeb4b8c43116f9253309ba85cc500a362..d73ddb29859761e6505b001fb4d303f953cb99e3 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
+@@ -22,13 +22,13 @@ public class CloseContext extends PlatformConfinedContext implements IFCloseCont
+     private final Viewer subject;
+     private final Player player;
+     private final IFRenderContext parent;
+-    private final InventoryCloseEvent closeOrigin;
++    private final Object closeOrigin; // surf - remove inventory close event type dependency
+ 
+     private boolean cancelled;
+ 
+     @ApiStatus.Internal
+     public CloseContext(
+-            @NotNull Viewer subject, @NotNull IFRenderContext parent, @NotNull InventoryCloseEvent closeOrigin) {
++            @NotNull Viewer subject, @NotNull IFRenderContext parent, @NotNull Object closeOrigin) { // surf - remove inventory close event type dependency
+         this.subject = subject;
+         this.player = ((BukkitViewer) subject).getPlayer();
+         this.parent = parent;
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
+index 3fbaedbd52efaa2e22d3ffd38140b23b6d5eef84..50f57dbc949c8cdc15ff0e908d46ac876adca3ed 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
+@@ -122,7 +122,7 @@ public class BukkitElementFactory extends ElementFactory {
+     @Override
+     public IFCloseContext createCloseContext(
+             @NotNull Viewer viewer, @NotNull IFRenderContext parent, @NotNull Object closeOrigin) {
+-        return new CloseContext(viewer, parent, (InventoryCloseEvent) closeOrigin);
++        return new CloseContext(viewer, parent, closeOrigin); // surf - remove inventory close event type dependency
+     }
+ 
+     @Override

@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: twisti <76837088+twisti-dev@users.noreply.github.com>
+Date: Thu, 14 May 2026 12:55:34 +0200
+Subject: [PATCH] support updated minecraft version string formats
+
+* add parsing support for versions containing ".build." suffixes
+* detect numeric patch version parts when counting version separators
+* preserve separator counting for non-patch version formats using dot characters
+
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
+index 56f4156079642a56f53f95ee6e9b706ce5d9569f..05e06e0b5314cf3156bcf1cc33204a79ea921eac 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
+@@ -20,6 +20,7 @@ public class McVersion implements Comparable<McVersion> {
+     }
+ 
+     private static int countColons(final String string) {
++		if (true) return countColonsForUpdatedVersionFormat(string); // surf - support new version format
+         int count = 0;
+         char[] arr = string.toCharArray();
+         for (int i = 0; i < string.length(); i++) {
+@@ -30,6 +31,36 @@ public class McVersion implements Comparable<McVersion> {
+         return count;
+     }
+ 
++	// surf start - support new version format
++	private static int countColonsForUpdatedVersionFormat(String version) {
++		if (version.contains(".build.")) {
++			String mcVersionPart = version.substring(0, version.indexOf(".build."));
++			return hasNumericPatchVersionPart(mcVersionPart) ? 3 : 2;
++		}
++
++		if (hasNumericPatchVersionPart(version)) {
++			return 3;
++		}
++
++		return (int) version.chars()
++			.filter(ch -> ch == '.')
++			.count();
++	}
++
++	private static boolean hasNumericPatchVersionPart(String version) {
++		String mcVersionPart = version.split("-", 2)[0];
++		String[] parts = mcVersionPart.split("\\.");
++
++		return parts.length >= 3
++			&& !parts[0].isEmpty()
++			&& !parts[1].isEmpty()
++			&& !parts[2].isEmpty()
++			&& parts[0].chars().allMatch(Character::isDigit)
++			&& parts[1].chars().allMatch(Character::isDigit)
++			&& parts[2].chars().allMatch(Character::isDigit);
++	}
++	// surf end - support new version format
++
+     private final int major;
+     private final int minor;
+     private final int patch;
