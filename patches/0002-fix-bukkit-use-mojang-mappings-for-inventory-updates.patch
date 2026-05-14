@@ -73,7 +73,7 @@ index 49791a036137c5519aaf81f1853be846f33d5719..69be9df4e327690761a31f1a121fcc9d
  
      private static Class<?> getClassOrNull(String className) {
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
-index 7ced2ad4da1a3dd9c50ba3e4c91486690d078bb8..8bb5e8162550c4da987fa20ab78cfc00cac43c61 100644
+index 7ced2ad4da1a3dd9c50ba3e4c91486690d078bb8..e199ac15ea5892956893fd75762fb5beaa6d0918 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/ReflectionUtils.java
 @@ -167,6 +167,8 @@ public final class ReflectionUtils {
@@ -123,3 +123,15 @@ index 7ced2ad4da1a3dd9c50ba3e4c91486690d078bb8..8bb5e8162550c4da987fa20ab78cfc00
      }
  
      public static boolean supportsMC1202() {
+@@ -307,7 +340,10 @@ public final class ReflectionUtils {
+         }
+ 
+         public VersionHandler<T> v(int version, T handle) {
+-            return v(minor, version, handle);
++			// surf start - update to mojang mappings
++//            return v(minor, version, handle);
++			return v(version, 0, handle);
++			// surf end - update to mojang mappings
+         }
+ 
+         public VersionHandler<T> v(int minor, int patch, T handle) {
