@@ -19,7 +19,7 @@ Subject: [PATCH] Add internal packet GUI backend
  .../internal/BukkitGuiBackend.java            |  20 +
  .../internal/GuiBackend.java                  |  34 ++
  .../internal/GuiBackendFactory.java           |  42 ++
- .../internal/packet/PacketGuiBackend.java     | 511 ++++++++++++++++++
+ .../internal/packet/PacketGuiBackend.java     | 532 ++++++++++++++++++
  .../internal/packet/PacketGuiClick.java       |  73 +++
  .../packet/PacketGuiPacketListener.java       | 122 +++++
  .../internal/packet/PacketGuiRender.java      |  99 ++++
@@ -32,7 +32,7 @@ Subject: [PATCH] Add internal packet GUI backend
  .../pipeline/ItemClickInterceptor.java        |   5 +-
  .../pipeline/ItemCloseOnClickInterceptor.java |   5 +-
  settings.gradle.kts                           |   2 +
- 28 files changed, 1842 insertions(+), 45 deletions(-)
+ 28 files changed, 1863 insertions(+), 45 deletions(-)
  create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
  create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
  create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
@@ -405,7 +405,7 @@ index 00000000..74af4430
 +
 +    @Override
 +    public Object getPlatformEvent() {
-+        return platformEvent;
++        return this;
 +    }
 +
 +    @Override
@@ -858,7 +858,7 @@ new file mode 100644
 index 00000000..1d617f3a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,532 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -869,6 +869,7 @@ index 00000000..1d617f3a
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenWindow;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetCursorItem;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerWindowItems;
++import java.lang.reflect.Method;
 +import java.util.ArrayList;
 +import java.util.List;
 +import java.util.UUID;
@@ -876,6 +877,7 @@ index 00000000..1d617f3a
 +import java.util.concurrent.ConcurrentMap;
 +import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.logging.Level;
++import java.util.function.Consumer;
 +import me.devnatan.inventoryframework.BukkitViewer;
 +import me.devnatan.inventoryframework.RootView;
 +import me.devnatan.inventoryframework.ViewContainer;
@@ -1002,7 +1004,7 @@ index 00000000..1d617f3a
 +
 +    void open(@NotNull BukkitViewer viewer, @NotNull PacketViewContainer container) {
 +        if (!Bukkit.isPrimaryThread()) {
-+            runMain(() -> open(viewer, container));
++            runOnPlayer(viewer.getPlayer(), () -> open(viewer, container));
 +            return;
 +        }
 +
@@ -1052,7 +1054,7 @@ index 00000000..1d617f3a
 +                continue;
 +            }
 +
-+            runMain(() -> {
++            runOnPlayer(session.player(), () -> {
 +                session.clearResyncScheduled();
 +                fullResync(session, false);
 +            });
@@ -1065,7 +1067,7 @@ index 00000000..1d617f3a
 +            return;
 +        }
 +
-+        runMain(() -> fullResync(session, true));
++        runOnPlayer(session.player(), () -> fullResync(session, true));
 +    }
 +
 +    boolean isGuiWindow(User user, int windowId) {
@@ -1088,11 +1090,11 @@ index 00000000..1d617f3a
 +        }
 +
 +        if (!click.isSafeTopPickup(session.container().getSize())) {
-+            runMain(() -> fullResync(session, false));
++            runOnPlayer(session.player(), () -> fullResync(session, false));
 +            return;
 +        }
 +
-+        runMain(() -> handleSafeTopClick(session, click));
++        runOnPlayer(session.player(), () -> handleSafeTopClick(session, click));
 +    }
 +
 +    void handleWindowClose(User user, int windowId) {
@@ -1105,7 +1107,7 @@ index 00000000..1d617f3a
 +            return;
 +        }
 +
-+        runMain(() -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true));
++        runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true));
 +    }
 +
 +    void handleExternalInventoryOpen(User user, int windowId, int topSize) {
@@ -1119,7 +1121,7 @@ index 00000000..1d617f3a
 +
 +        final PacketGuiSession session = sessions.get(user.getUUID());
 +        if (session != null && !isGuiWindow(user, windowId)) {
-+            runMain(() -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true));
++            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true));
 +        }
 +    }
 +
@@ -1247,7 +1249,7 @@ index 00000000..1d617f3a
 +
 +    private void fullResync(PacketGuiSession session, boolean forceReopen) {
 +        if (!Bukkit.isPrimaryThread()) {
-+            runMain(() -> fullResync(session, forceReopen));
++            runOnPlayer(session.player(), () -> fullResync(session, forceReopen));
 +            return;
 +        }
 +
@@ -1361,13 +1363,32 @@ index 00000000..1d617f3a
 +        return Math.max(1, nextWindowId.getAndUpdate(previous -> previous >= MAX_WINDOW_ID ? 1 : previous + 1));
 +    }
 +
-+    private void runMain(Runnable task) {
++    private void runOnPlayer(Player player, Runnable task) {
 +        if (Bukkit.isPrimaryThread()) {
 +            task.run();
 +            return;
 +        }
 +
++        if (tryRunEntityScheduler(player, task)) {
++            return;
++        }
++
 +        Bukkit.getScheduler().runTask(owner, task);
++    }
++
++    private boolean tryRunEntityScheduler(Player player, Runnable task) {
++        try {
++            final Method getScheduler = player.getClass().getMethod("getScheduler");
++            final Object scheduler = getScheduler.invoke(player);
++            final Method run = scheduler.getClass().getMethod("run", Plugin.class, Consumer.class, Runnable.class);
++            final Consumer<Object> scheduledTaskConsumer = ignored -> task.run();
++            run.invoke(scheduler, owner, scheduledTaskConsumer, null);
++            return true;
++        } catch (final NoSuchMethodException ignored) {
++            return false;
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to schedule packet GUI task on the player scheduler", exception);
++        }
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
