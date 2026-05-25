@@ -858,7 +858,7 @@ new file mode 100644
 index 00000000..1d617f3a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,532 @@
+@@ -0,0 +1,541 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1106,7 +1106,7 @@ index 00000000..1d617f3a
 +        if (!isTracked(session) || session.windowId() != windowId) {
 +            return;
 +        }
-+
++        session.viewerInventory().closeWindow(windowId);
 +        runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true));
 +    }
 +
@@ -1127,6 +1127,14 @@ index 00000000..1d617f3a
 +
 +    void handleInventoryClosePacket(User user, int windowId) {
 +        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        final PacketGuiSession session = sessions.get(user.getUUID());
++        if (isTracked(session)) {
++            if (windowId != session.windowId()) {
++                closeSession(session, true, CLOSE_ORIGIN_SERVER, true);
++            }
 +            return;
 +        }
 +
@@ -1321,7 +1329,7 @@ index 00000000..1d617f3a
 +        }
 +
 +        sessions.remove(session.viewerId(), session);
-+
++        session.viewerInventory().closeWindow(session.windowId());
 +        if (sendClosePacket) {
 +            try {
 +                sendCursor(session);
@@ -1331,6 +1339,7 @@ index 00000000..1d617f3a
 +            }
 +        }
 +
++        session.player().updateInventory();
 +        if (callClose) {
 +            executeClosePipeline(session, origin);
 +        }
@@ -1531,7 +1540,7 @@ index 00000000..b10d5a0e
 +                return;
 +            }
 +
-+            event.setCancelled(true);
++            event.setCancelled(false);
 +            backend.handleWindowClose(event.getUser(), packet.getWindowId());
 +        }
 +    }
