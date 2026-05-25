@@ -1,0 +1,2383 @@
+From 19839bbfac4bcfb77c789015346b65f8a65cb3b2 Mon Sep 17 00:00:00 2001
+From: Keviro <keviro@slne.dev>
+Date: Mon, 25 May 2026 23:04:19 +0200
+Subject: [PATCH] Add internal packet GUI backend
+
+---
+ gradle/libs.versions.toml                     |   7 +-
+ .../build.gradle.kts                          |   4 +-
+ .../inventoryframework/BukkitViewer.java      |   7 +-
+ .../IFInventoryListener.java                  |  18 +
+ .../inventoryframework/ViewFrame.java         |  10 +-
+ .../context/BukkitSlotClickOrigin.java        |  89 +++
+ .../context/CloseContext.java                 |   1 -
+ .../context/PacketSlotClickOrigin.java        | 122 +++++
+ .../context/RenderContext.java                |   8 +-
+ .../context/SlotClickContext.java             |  61 ++-
+ .../context/SlotClickOrigin.java              |  42 ++
+ .../internal/BukkitElementFactory.java        |  18 +-
+ .../internal/BukkitGuiBackend.java            |  20 +
+ .../internal/GuiBackend.java                  |  34 ++
+ .../internal/GuiBackendFactory.java           |  42 ++
+ .../internal/packet/PacketGuiBackend.java     | 511 ++++++++++++++++++
+ .../internal/packet/PacketGuiClick.java       |  73 +++
+ .../packet/PacketGuiPacketListener.java       | 122 +++++
+ .../internal/packet/PacketGuiRender.java      |  99 ++++
+ .../internal/packet/PacketGuiSession.java     | 116 ++++
+ .../packet/PacketInventoryConstants.java      |  39 ++
+ .../internal/packet/PacketItemConverter.java  |  37 ++
+ .../internal/packet/PacketViewContainer.java  | 229 ++++++++
+ .../packet/PacketViewerInventory.java         | 162 ++++++
+ .../pipeline/GlobalClickInterceptor.java      |   4 +-
+ .../pipeline/ItemClickInterceptor.java        |   5 +-
+ .../pipeline/ItemCloseOnClickInterceptor.java |   5 +-
+ settings.gradle.kts                           |   2 +
+ 28 files changed, 1842 insertions(+), 45 deletions(-)
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
+ create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
+
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index 89850fa8..daec84d3 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -14,6 +14,7 @@ plugin-spotless = "7.2.1"
+ plugin-bukkit = "0.7.1"
+ minestom = "b39badc77b"
+ folialib = "0.5.1"
++packetevents = "2.12.1"
+ 
+ [libraries.spigot]
+ module = "org.spigotmc:spigot-api"
+@@ -57,10 +58,14 @@ version.ref = "minestom"
+ module = "com.tcoded:FoliaLib"
+ version.ref = "folialib"
+ 
++[libraries.packetevents-spigot]
++module = "com.github.retrooper:packetevents-spigot"
++version.ref = "packetevents"
++
+ [plugins]
+ shadowjar = { id = "com.gradleup.shadow", version.ref = "plugin-shadowjar" }
+ spotless = { id = "com.diffplug.spotless", version.ref = "plugin-spotless" }
+ kotlin = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+ bukkit = { id = "de.eldoria.plugin-yml.bukkit", version.ref = "plugin-bukkit" }
+ runPaper = { id = "xyz.jpenilla.run-paper", version =  "3.0.2" }
+-publish = { id = "com.vanniktech.maven.publish.base", version = "0.34.0" }
+\ No newline at end of file
++publish = { id = "com.vanniktech.maven.publish.base", version = "0.34.0" }
+diff --git a/inventory-framework-platform-bukkit/build.gradle.kts b/inventory-framework-platform-bukkit/build.gradle.kts
+index 6a29127f..237bf07e 100644
+--- a/inventory-framework-platform-bukkit/build.gradle.kts
++++ b/inventory-framework-platform-bukkit/build.gradle.kts
+@@ -13,6 +13,7 @@ dependencies {
+     api(projects.inventoryFrameworkPlatform)
+     runtimeOnly(projects.inventoryFrameworkAnvilInput)
+     compileOnly(libs.spigot)
++    compileOnly(libs.packetevents.spigot)
+     testCompileOnly(libs.spigot)
+     testRuntimeOnly(libs.spigot)
+     testImplementation(projects.inventoryFrameworkApi)
+@@ -39,5 +40,6 @@ bukkit {
+     website = "https://github.com/DevNatan/inventory-framework"
+     apiVersion = "1.13"
+     authors = listOf("SaiintBrisson", "DevNatan", "sasuked")
++    softDepend = listOf("packetevents")
+     foliaSupported = true
+-}
+\ No newline at end of file
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
+index 16e47919..78c704d7 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
+@@ -52,7 +52,12 @@ public final class BukkitViewer implements Viewer {
+ 
+     @Override
+     public void open(@NotNull final ViewContainer container) {
+-        getPlayer().openInventory(((BukkitViewContainer) container).getInventory());
++        if (container instanceof BukkitViewContainer) {
++            getPlayer().openInventory(((BukkitViewContainer) container).getInventory());
++            return;
++        }
++
++        container.open(this);
+     }
+ 
+     @Override
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
+index e7d2c7a0..199757af 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
+@@ -5,6 +5,8 @@ import me.devnatan.inventoryframework.context.IFCloseContext;
+ import me.devnatan.inventoryframework.context.IFContext;
+ import me.devnatan.inventoryframework.context.IFRenderContext;
+ import me.devnatan.inventoryframework.context.IFSlotClickContext;
++import me.devnatan.inventoryframework.internal.BukkitGuiBackend;
++import me.devnatan.inventoryframework.internal.GuiBackend;
+ import me.devnatan.inventoryframework.pipeline.StandardPipelinePhases;
+ import org.bukkit.entity.Player;
+ import org.bukkit.event.EventHandler;
+@@ -13,6 +15,7 @@ import org.bukkit.event.Listener;
+ import org.bukkit.event.inventory.InventoryClickEvent;
+ import org.bukkit.event.inventory.InventoryCloseEvent;
+ import org.bukkit.event.inventory.InventoryDragEvent;
++import org.bukkit.event.inventory.InventoryOpenEvent;
+ import org.bukkit.event.inventory.InventoryType;
+ import org.bukkit.event.player.PlayerDropItemEvent;
+ import org.bukkit.event.player.PlayerPickupItemEvent;
+@@ -24,9 +27,15 @@ import org.bukkit.inventory.PlayerInventory;
+ final class IFInventoryListener implements Listener {
+ 
+     private final ViewFrame viewFrame;
++    private final GuiBackend guiBackend;
+ 
+     public IFInventoryListener(ViewFrame viewFrame) {
++        this(viewFrame, new BukkitGuiBackend());
++    }
++
++    public IFInventoryListener(ViewFrame viewFrame, GuiBackend guiBackend) {
+         this.viewFrame = viewFrame;
++        this.guiBackend = guiBackend;
+     }
+ 
+     @EventHandler
+@@ -39,6 +48,8 @@ final class IFInventoryListener implements Listener {
+     @EventHandler
+     public void onPlayerQuit(PlayerQuitEvent event) {
+         final Player player = (Player) event.getPlayer();
++        if (guiBackend.handlePlayerQuit(player)) return;
++
+         final Viewer viewer = viewFrame.getViewer(player);
+         if (viewer == null) return;
+ 
+@@ -49,6 +60,13 @@ final class IFInventoryListener implements Listener {
+         root.getPipeline().execute(StandardPipelinePhases.CLOSE, closeContext);
+     }
+ 
++    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
++    public void onInventoryOpen(final InventoryOpenEvent event) {
++        if (!(event.getPlayer() instanceof Player)) return;
++
++        guiBackend.handleExternalInventoryOpen((Player) event.getPlayer());
++    }
++
+     @EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
+     public void onInventoryClick(final InventoryClickEvent event) {
+         if (!(event.getWhoClicked() instanceof Player)) return;
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/ViewFrame.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/ViewFrame.java
+index 2d97a162..4dc75f81 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/ViewFrame.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/ViewFrame.java
+@@ -14,6 +14,8 @@ import me.devnatan.inventoryframework.feature.DefaultFeatureInstaller;
+ import me.devnatan.inventoryframework.feature.Feature;
+ import me.devnatan.inventoryframework.feature.FeatureInstaller;
+ import me.devnatan.inventoryframework.internal.BukkitElementFactory;
++import me.devnatan.inventoryframework.internal.GuiBackend;
++import me.devnatan.inventoryframework.internal.GuiBackendFactory;
+ import me.devnatan.inventoryframework.internal.PlatformUtils;
+ import me.devnatan.inventoryframework.runtime.thirdparty.Metrics;
+ import org.bukkit.entity.Player;
+@@ -35,10 +37,12 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
+                     + "https://github.com/DevNatan/inventory-framework/wiki/Installation#preventing-library-conflicts";
+ 
+     private final Plugin owner;
++    private final GuiBackend guiBackend;
+     private final FeatureInstaller<ViewFrame> featureInstaller = new DefaultFeatureInstaller<>(this);
+ 
+     private ViewFrame(Plugin owner) {
+         this.owner = owner;
++        this.guiBackend = GuiBackendFactory.create(owner);
+     }
+ 
+     @NotNull
+@@ -186,13 +190,14 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
+     public final ViewFrame register() {
+         if (isRegistered()) throw new IllegalStateException("This view frame is already registered");
+ 
+-        PlatformUtils.setFactory(new BukkitElementFactory(getOwner()));
++        PlatformUtils.setFactory(new BukkitElementFactory(getOwner(), guiBackend));
++        guiBackend.register();
+         tryEnableMetrics();
+         checkRelocationIssues();
+         setRegistered(true);
+         getPipeline().execute(IFViewFrame.FRAME_REGISTERED, this);
+         initializeViews();
+-        getOwner().getServer().getPluginManager().registerEvents(new IFInventoryListener(this), getOwner());
++        getOwner().getServer().getPluginManager().registerEvents(new IFInventoryListener(this, guiBackend), getOwner());
+         return this;
+     }
+ 
+@@ -213,6 +218,7 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
+             iterator.remove();
+         }
+         getPipeline().execute(IFViewFrame.FRAME_UNREGISTERED, this);
++        guiBackend.unregister();
+     }
+ 
+     // region Internals
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
+new file mode 100644
+index 00000000..07639c5a
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
+@@ -0,0 +1,89 @@
++package me.devnatan.inventoryframework.context;
++
++import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.ClickType;
++import org.bukkit.event.inventory.InventoryClickEvent;
++import org.bukkit.event.inventory.InventoryType;
++import org.bukkit.inventory.ItemStack;
++import org.bukkit.inventory.PlayerInventory;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++final class BukkitSlotClickOrigin implements SlotClickOrigin {
++
++    private final InventoryClickEvent event;
++
++    BukkitSlotClickOrigin(@NotNull InventoryClickEvent event) {
++        this.event = event;
++    }
++
++    @Override
++    public @NotNull Player getPlayer() {
++        return (Player) event.getWhoClicked();
++    }
++
++    @Override
++    public @Nullable ItemStack getCurrentItem() {
++        return event.getCurrentItem();
++    }
++
++    @Override
++    public Object getPlatformEvent() {
++        return event;
++    }
++
++    @Override
++    public int getRawSlot() {
++        return event.getRawSlot();
++    }
++
++    @Override
++    public boolean isLeftClick() {
++        return event.isLeftClick();
++    }
++
++    @Override
++    public boolean isRightClick() {
++        return event.isRightClick();
++    }
++
++    @Override
++    public boolean isMiddleClick() {
++        return event.getClick() == ClickType.MIDDLE;
++    }
++
++    @Override
++    public boolean isShiftClick() {
++        return event.isShiftClick();
++    }
++
++    @Override
++    public boolean isKeyboardClick() {
++        return event.getClick().isKeyboardClick();
++    }
++
++    @Override
++    public boolean isOutsideClick() {
++        return event.getSlotType() == InventoryType.SlotType.OUTSIDE;
++    }
++
++    @Override
++    public boolean isOnEntityContainer() {
++        return event.getClickedInventory() instanceof PlayerInventory;
++    }
++
++    @Override
++    public @NotNull String getClickIdentifier() {
++        return event.getClick().name();
++    }
++
++    @Override
++    public boolean isCancelled() {
++        return event.isCancelled();
++    }
++
++    @Override
++    public void setCancelled(boolean cancelled) {
++        event.setCancelled(cancelled);
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
+index d73ddb29..686664b4 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
+@@ -12,7 +12,6 @@ import me.devnatan.inventoryframework.state.State;
+ import me.devnatan.inventoryframework.state.StateValue;
+ import me.devnatan.inventoryframework.state.StateWatcher;
+ import org.bukkit.entity.Player;
+-import org.bukkit.event.inventory.InventoryCloseEvent;
+ import org.jetbrains.annotations.ApiStatus;
+ import org.jetbrains.annotations.NotNull;
+ import org.jetbrains.annotations.UnmodifiableView;
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
+new file mode 100644
+index 00000000..74af4430
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
+@@ -0,0 +1,122 @@
++package me.devnatan.inventoryframework.context;
++
++import org.bukkit.entity.Player;
++import org.bukkit.inventory.ItemStack;
++import org.jetbrains.annotations.ApiStatus;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++@ApiStatus.Internal
++public final class PacketSlotClickOrigin implements SlotClickOrigin {
++
++    private final Player player;
++    private final ItemStack currentItem;
++    private final Object platformEvent;
++    private final int rawSlot;
++    private final String clickIdentifier;
++    private final boolean leftClick;
++    private final boolean rightClick;
++    private final boolean middleClick;
++    private final boolean shiftClick;
++    private final boolean keyboardClick;
++    private final boolean outsideClick;
++    private final boolean onEntityContainer;
++    private boolean cancelled = true;
++
++    public PacketSlotClickOrigin(
++            @NotNull Player player,
++            @Nullable ItemStack currentItem,
++            Object platformEvent,
++            int rawSlot,
++            @NotNull String clickIdentifier,
++            boolean leftClick,
++            boolean rightClick,
++            boolean middleClick,
++            boolean shiftClick,
++            boolean keyboardClick,
++            boolean outsideClick,
++            boolean onEntityContainer) {
++        this.player = player;
++        this.currentItem = currentItem == null ? null : currentItem.clone();
++        this.platformEvent = platformEvent;
++        this.rawSlot = rawSlot;
++        this.clickIdentifier = clickIdentifier;
++        this.leftClick = leftClick;
++        this.rightClick = rightClick;
++        this.middleClick = middleClick;
++        this.shiftClick = shiftClick;
++        this.keyboardClick = keyboardClick;
++        this.outsideClick = outsideClick;
++        this.onEntityContainer = onEntityContainer;
++    }
++
++    @Override
++    public @NotNull Player getPlayer() {
++        return player;
++    }
++
++    @Override
++    public @Nullable ItemStack getCurrentItem() {
++        return currentItem == null ? null : currentItem.clone();
++    }
++
++    @Override
++    public Object getPlatformEvent() {
++        return platformEvent;
++    }
++
++    @Override
++    public int getRawSlot() {
++        return rawSlot;
++    }
++
++    @Override
++    public boolean isLeftClick() {
++        return leftClick;
++    }
++
++    @Override
++    public boolean isRightClick() {
++        return rightClick;
++    }
++
++    @Override
++    public boolean isMiddleClick() {
++        return middleClick;
++    }
++
++    @Override
++    public boolean isShiftClick() {
++        return shiftClick;
++    }
++
++    @Override
++    public boolean isKeyboardClick() {
++        return keyboardClick;
++    }
++
++    @Override
++    public boolean isOutsideClick() {
++        return outsideClick;
++    }
++
++    @Override
++    public boolean isOnEntityContainer() {
++        return onEntityContainer;
++    }
++
++    @Override
++    public @NotNull String getClickIdentifier() {
++        return clickIdentifier;
++    }
++
++    @Override
++    public boolean isCancelled() {
++        return cancelled;
++    }
++
++    @Override
++    public void setCancelled(boolean cancelled) {
++        this.cancelled = cancelled;
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
+index b89eae09..e1ccb7b9 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
+@@ -169,6 +169,12 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
+ 
+     @Override
+     public @NotNull Inventory getInventory() {
+-        return ((BukkitViewContainer) getContainerOrThrow()).getInventory();
++        final ViewContainer container = getContainerOrThrow();
++        if (container instanceof BukkitViewContainer) {
++            return ((BukkitViewContainer) container).getInventory();
++        }
++
++        throw new UnsupportedOperationException(
++                "A real Bukkit Inventory is not available when this context uses the packet GUI backend.");
+     }
+ }
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
+index c0bb9419..21b66e39 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
+@@ -5,11 +5,8 @@ import me.devnatan.inventoryframework.ViewContainer;
+ import me.devnatan.inventoryframework.Viewer;
+ import me.devnatan.inventoryframework.component.Component;
+ import org.bukkit.entity.Player;
+-import org.bukkit.event.inventory.ClickType;
+ import org.bukkit.event.inventory.InventoryClickEvent;
+-import org.bukkit.event.inventory.InventoryType;
+ import org.bukkit.inventory.ItemStack;
+-import org.bukkit.inventory.PlayerInventory;
+ import org.jetbrains.annotations.ApiStatus;
+ import org.jetbrains.annotations.NotNull;
+ import org.jetbrains.annotations.Nullable;
+@@ -19,7 +16,8 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+     private final Viewer whoClicked;
+     private final ViewContainer clickedContainer;
+     private final Component clickedComponent;
+-    private final InventoryClickEvent clickOrigin;
++    private final SlotClickOrigin clickOrigin;
++    private final InventoryClickEvent inventoryClickOrigin;
+     private final boolean combined;
+     private boolean cancelled;
+ 
+@@ -32,19 +30,37 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+             @Nullable Component clickedComponent,
+             @NotNull InventoryClickEvent clickOrigin,
+             boolean combined) {
++        this(slot, parent, whoClicked, clickedContainer, clickedComponent, (Object) clickOrigin, combined);
++    }
++
++    /**
++     * <b><i> This is an internal inventory-framework API that should not be used from outside of
++     * this library. No compatibility guarantees are provided. </i></b>
++     */
++    @ApiStatus.Internal
++    public SlotClickContext(
++            int slot,
++            @NotNull IFRenderContext parent,
++            @NotNull Viewer whoClicked,
++            @NotNull ViewContainer clickedContainer,
++            @Nullable Component clickedComponent,
++            @NotNull Object clickOrigin,
++            boolean combined) {
+         super(slot, parent);
+         this.whoClicked = whoClicked;
+         this.clickedContainer = clickedContainer;
+         this.clickedComponent = clickedComponent;
+-        this.clickOrigin = clickOrigin;
++        this.clickOrigin = normalizeOrigin(clickOrigin);
++        this.inventoryClickOrigin = clickOrigin instanceof InventoryClickEvent ? (InventoryClickEvent) clickOrigin : null;
+         this.combined = combined;
++        this.cancelled = this.clickOrigin.isCancelled();
+     }
+ 
+     /**
+      * The player who clicked on the slot.
+      */
+     public final @NotNull Player getPlayer() {
+-        return (Player) clickOrigin.getWhoClicked();
++        return clickOrigin.getPlayer();
+     }
+ 
+     /**
+@@ -55,7 +71,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+      */
+     @NotNull
+     public InventoryClickEvent getClickOrigin() {
+-        return clickOrigin;
++        if (inventoryClickOrigin == null)
++            throw new UnsupportedOperationException(
++                    "InventoryClickEvent is not available when using the packet GUI backend.");
++
++        return inventoryClickOrigin;
+     }
+ 
+     /**
+@@ -84,12 +104,12 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+     @Override
+     public final void setCancelled(boolean cancelled) {
+         this.cancelled = cancelled;
+-        getClickOrigin().setCancelled(cancelled);
++        clickOrigin.setCancelled(cancelled);
+     }
+ 
+     @Override
+     public final Object getPlatformEvent() {
+-        return clickOrigin;
++        return clickOrigin.getPlatformEvent();
+     }
+ 
+     @Override
+@@ -99,42 +119,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+ 
+     @Override
+     public final boolean isLeftClick() {
+-        return getClickOrigin().isLeftClick();
++        return clickOrigin.isLeftClick();
+     }
+ 
+     @Override
+     public final boolean isRightClick() {
+-        return getClickOrigin().isRightClick();
++        return clickOrigin.isRightClick();
+     }
+ 
+     @Override
+     public final boolean isMiddleClick() {
+-        return getClickOrigin().getClick() == ClickType.MIDDLE;
++        return clickOrigin.isMiddleClick();
+     }
+ 
+     @Override
+     public final boolean isShiftClick() {
+-        return getClickOrigin().isShiftClick();
++        return clickOrigin.isShiftClick();
+     }
+ 
+     @Override
+     public final boolean isKeyboardClick() {
+-        return getClickOrigin().getClick().isKeyboardClick();
++        return clickOrigin.isKeyboardClick();
+     }
+ 
+     @Override
+     public final boolean isOutsideClick() {
+-        return getClickOrigin().getSlotType() == InventoryType.SlotType.OUTSIDE;
++        return clickOrigin.isOutsideClick();
+     }
+ 
+     @Override
+     public final String getClickIdentifier() {
+-        return getClickOrigin().getClick().name();
++        return clickOrigin.getClickIdentifier();
+     }
+ 
+     @Override
+     public final boolean isOnEntityContainer() {
+-        return getClickOrigin().getClickedInventory() instanceof PlayerInventory;
++        return clickOrigin.isOnEntityContainer();
+     }
+ 
+     @Override
+@@ -176,4 +196,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+     public final boolean isCombined() {
+         return combined;
+     }
++
++    private SlotClickOrigin normalizeOrigin(Object origin) {
++        if (origin instanceof SlotClickOrigin) return (SlotClickOrigin) origin;
++        if (origin instanceof InventoryClickEvent) return new BukkitSlotClickOrigin((InventoryClickEvent) origin);
++
++        throw new IllegalArgumentException("Unsupported click origin: " + origin.getClass().getName());
++    }
+ }
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
+new file mode 100644
+index 00000000..7da19162
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
+@@ -0,0 +1,42 @@
++package me.devnatan.inventoryframework.context;
++
++import org.bukkit.entity.Player;
++import org.bukkit.inventory.ItemStack;
++import org.jetbrains.annotations.ApiStatus;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++@ApiStatus.Internal
++public interface SlotClickOrigin {
++
++    @NotNull
++    Player getPlayer();
++
++    @Nullable
++    ItemStack getCurrentItem();
++
++    Object getPlatformEvent();
++
++    int getRawSlot();
++
++    boolean isLeftClick();
++
++    boolean isRightClick();
++
++    boolean isMiddleClick();
++
++    boolean isShiftClick();
++
++    boolean isKeyboardClick();
++
++    boolean isOutsideClick();
++
++    boolean isOnEntityContainer();
++
++    @NotNull
++    String getClickIdentifier();
++
++    boolean isCancelled();
++
++    void setCancelled(boolean cancelled);
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
+index 50f57dbc..f6dec24a 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
+@@ -16,10 +16,6 @@ import me.devnatan.inventoryframework.context.*;
+ import me.devnatan.inventoryframework.logging.Logger;
+ import me.devnatan.inventoryframework.logging.NoopLogger;
+ import org.bukkit.entity.Player;
+-import org.bukkit.event.inventory.InventoryClickEvent;
+-import org.bukkit.event.inventory.InventoryCloseEvent;
+-import org.bukkit.inventory.Inventory;
+-import org.bukkit.inventory.InventoryHolder;
+ import org.bukkit.plugin.Plugin;
+ import org.jetbrains.annotations.NotNull;
+ import org.jetbrains.annotations.Nullable;
+@@ -30,9 +26,15 @@ public class BukkitElementFactory extends ElementFactory {
+     private Boolean worksInCurrentPlatform = null;
+ 
+     private final FoliaLib foliaLib;
++    private final GuiBackend guiBackend;
+ 
+     public BukkitElementFactory(Plugin plugin) {
++        this(plugin, new BukkitGuiBackend());
++    }
++
++    public BukkitElementFactory(Plugin plugin, GuiBackend guiBackend) {
+         this.foliaLib = new FoliaLib(plugin);
++        this.guiBackend = guiBackend;
+     }
+ 
+     @Override
+@@ -57,11 +59,7 @@ public class BukkitElementFactory extends ElementFactory {
+                     finalType.getMaxSize(),
+                     context.getRoot().getClass().getName()));
+ 
+-        final InventoryHolder holder = context instanceof InventoryHolder ? (InventoryHolder) context : null;
+-        final Inventory inventory =
+-                InventoryFactory.current().createInventory(holder, finalType, size, config.getTitle());
+-
+-        return new BukkitViewContainer(inventory, false, finalType, false);
++        return guiBackend.createContainer(context, finalType, size, config.getTitle());
+     }
+ 
+     @Override
+@@ -109,7 +107,7 @@ public class BukkitElementFactory extends ElementFactory {
+                 whoClicked,
+                 interactionContainer,
+                 componentClicked,
+-                (InventoryClickEvent) origin,
++                origin,
+                 combined);
+     }
+ 
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
+new file mode 100644
+index 00000000..d4e57da2
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
+@@ -0,0 +1,20 @@
++package me.devnatan.inventoryframework.internal;
++
++import me.devnatan.inventoryframework.BukkitViewContainer;
++import me.devnatan.inventoryframework.ViewContainer;
++import me.devnatan.inventoryframework.ViewType;
++import me.devnatan.inventoryframework.context.IFContext;
++import org.bukkit.inventory.Inventory;
++import org.bukkit.inventory.InventoryHolder;
++import org.jetbrains.annotations.NotNull;
++
++public final class BukkitGuiBackend implements GuiBackend {
++
++    @Override
++    public @NotNull ViewContainer createContainer(
++            @NotNull IFContext context, @NotNull ViewType type, int size, Object title) {
++        final InventoryHolder holder = context instanceof InventoryHolder ? (InventoryHolder) context : null;
++        final Inventory inventory = InventoryFactory.current().createInventory(holder, type, size, title);
++        return new BukkitViewContainer(inventory, false, type, false);
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
+new file mode 100644
+index 00000000..b7efdbc7
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
+@@ -0,0 +1,34 @@
++package me.devnatan.inventoryframework.internal;
++
++import me.devnatan.inventoryframework.ViewContainer;
++import me.devnatan.inventoryframework.ViewType;
++import me.devnatan.inventoryframework.context.IFContext;
++import org.bukkit.entity.Player;
++import org.jetbrains.annotations.ApiStatus;
++import org.jetbrains.annotations.NotNull;
++
++/**
++ * Internal backend abstraction for platform inventory rendering.
++ */
++@ApiStatus.Internal
++public interface GuiBackend {
++
++    @NotNull
++    ViewContainer createContainer(@NotNull IFContext context, @NotNull ViewType type, int size, Object title);
++
++    default void register() {}
++
++    default void unregister() {}
++
++    default boolean handlePlayerQuit(@NotNull Player player) {
++        return false;
++    }
++
++    default boolean handleExternalInventoryOpen(@NotNull Player player) {
++        return false;
++    }
++
++    default boolean isPacketBackend() {
++        return false;
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
+new file mode 100644
+index 00000000..a490dc1a
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
+@@ -0,0 +1,42 @@
++package me.devnatan.inventoryframework.internal;
++
++import me.devnatan.inventoryframework.internal.packet.PacketGuiBackend;
++import org.bukkit.plugin.Plugin;
++import org.jetbrains.annotations.ApiStatus;
++import org.jetbrains.annotations.NotNull;
++
++@ApiStatus.Internal
++public final class GuiBackendFactory {
++
++    private static final String BACKEND_PROPERTY = "inventory-framework.gui-backend";
++    private static final String PACKET_BACKEND = "packet";
++    private static final String PACKET_EVENTS_FQN = "com.github.retrooper.packetevents.PacketEvents";
++
++    private GuiBackendFactory() {}
++
++    public static @NotNull GuiBackend create(@NotNull Plugin owner) {
++        final BukkitGuiBackend bukkitBackend = new BukkitGuiBackend();
++        final String configuredBackend = System.getProperty(BACKEND_PROPERTY, "bukkit");
++        if (!PACKET_BACKEND.equalsIgnoreCase(configuredBackend)) {
++            return bukkitBackend;
++        }
++
++        if (!isPacketEventsPresent()) {
++            owner.getLogger()
++                    .warning("Packet GUI backend requested, but PacketEvents is not available. "
++                            + "Falling back to the Bukkit inventory backend.");
++            return bukkitBackend;
++        }
++
++        return new PacketGuiBackend(owner, bukkitBackend);
++    }
++
++    private static boolean isPacketEventsPresent() {
++        try {
++            Class.forName(PACKET_EVENTS_FQN, false, GuiBackendFactory.class.getClassLoader());
++            return true;
++        } catch (final ClassNotFoundException ignored) {
++            return false;
++        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
+new file mode 100644
+index 00000000..1d617f3a
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
+@@ -0,0 +1,511 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import com.github.retrooper.packetevents.PacketEvents;
++import com.github.retrooper.packetevents.event.PacketListenerCommon;
++import com.github.retrooper.packetevents.manager.server.ServerVersion;
++import com.github.retrooper.packetevents.protocol.player.User;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCloseWindow;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenWindow;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetCursorItem;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerWindowItems;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.UUID;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.ConcurrentMap;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.logging.Level;
++import me.devnatan.inventoryframework.BukkitViewer;
++import me.devnatan.inventoryframework.RootView;
++import me.devnatan.inventoryframework.ViewContainer;
++import me.devnatan.inventoryframework.ViewType;
++import me.devnatan.inventoryframework.Viewer;
++import me.devnatan.inventoryframework.component.Component;
++import me.devnatan.inventoryframework.context.IFCloseContext;
++import me.devnatan.inventoryframework.context.IFRenderContext;
++import me.devnatan.inventoryframework.context.IFSlotClickContext;
++import me.devnatan.inventoryframework.context.PacketSlotClickOrigin;
++import me.devnatan.inventoryframework.internal.BukkitGuiBackend;
++import me.devnatan.inventoryframework.internal.GuiBackend;
++import me.devnatan.inventoryframework.pipeline.StandardPipelinePhases;
++import org.bukkit.Bukkit;
++import org.bukkit.entity.Player;
++import org.bukkit.plugin.Plugin;
++import org.jetbrains.annotations.NotNull;
++
++public final class PacketGuiBackend implements GuiBackend {
++
++    private static final int MAX_WINDOW_ID = 127;
++    private static final String CLOSE_ORIGIN_CLIENT = "packet-gui-client-close";
++    private static final String CLOSE_ORIGIN_SERVER = "packet-gui-server-close";
++    private static final String CLOSE_ORIGIN_QUIT = "packet-gui-player-quit";
++    private static final String CLOSE_ORIGIN_EXTERNAL_OPEN = "packet-gui-external-inventory-open";
++    private static final String CLOSE_ORIGIN_SHUTDOWN = "packet-gui-shutdown";
++
++    private final Plugin owner;
++    private final BukkitGuiBackend fallbackBackend;
++    private final ConcurrentMap<UUID, PacketGuiSession> sessions = new ConcurrentHashMap<>();
++    private final ConcurrentMap<UUID, PacketViewerInventory> viewerInventories = new ConcurrentHashMap<>();
++    private final AtomicInteger nextWindowId = new AtomicInteger(1);
++    private PacketListenerCommon listener;
++    private volatile boolean available = true;
++
++    public PacketGuiBackend(@NotNull Plugin owner, @NotNull BukkitGuiBackend fallbackBackend) {
++        this.owner = owner;
++        this.fallbackBackend = fallbackBackend;
++    }
++
++    @Override
++    public @NotNull ViewContainer createContainer(
++            @NotNull me.devnatan.inventoryframework.context.IFContext context,
++            @NotNull ViewType type,
++            int size,
++            Object title) {
++        if (!available || !(context instanceof IFRenderContext)) {
++            return fallbackBackend.createContainer(context, type, size, title);
++        }
++
++        if (!ViewType.CHEST.equals(type) || (size != 0 && size % type.getColumns() != 0)) {
++            owner.getLogger()
++                    .fine("Packet GUI backend currently supports chest-style containers only. "
++                            + "Using Bukkit backend for " + type.getIdentifier() + ".");
++            return fallbackBackend.createContainer(context, type, size, title);
++        }
++
++        final int effectiveSize = size == 0 ? 27 : size;
++        return new PacketViewContainer(this, (IFRenderContext) context, type, effectiveSize, title);
++    }
++
++    @Override
++    public void register() {
++        try {
++            if (PacketEvents.getAPI() == null || !PacketEvents.getAPI().isInitialized()) {
++                available = false;
++                owner.getLogger()
++                        .warning("Packet GUI backend requested, but PacketEvents is not initialized. "
++                                + "Falling back to the Bukkit inventory backend.");
++                return;
++            }
++
++            listener = PacketEvents.getAPI().getEventManager().registerListener(new PacketGuiPacketListener(this));
++        } catch (final RuntimeException exception) {
++            available = false;
++            owner.getLogger().log(Level.WARNING, "Failed to register packet GUI backend. Falling back to Bukkit.", exception);
++        }
++    }
++
++    @Override
++    public void unregister() {
++        for (final PacketGuiSession session : List.copyOf(sessions.values())) {
++            closeSession(session, false, CLOSE_ORIGIN_SHUTDOWN, false);
++        }
++        sessions.clear();
++        viewerInventories.clear();
++
++        if (listener == null) {
++            return;
++        }
++
++        try {
++            PacketEvents.getAPI().getEventManager().unregisterListener(listener);
++        } catch (final RuntimeException exception) {
++            owner.getLogger().log(Level.WARNING, "Failed to unregister packet GUI listener", exception);
++        } finally {
++            listener = null;
++        }
++    }
++
++    @Override
++    public boolean handlePlayerQuit(@NotNull Player player) {
++        final PacketGuiSession session = sessions.get(player.getUniqueId());
++        if (session == null) return false;
++
++        closeSession(session, false, CLOSE_ORIGIN_QUIT, true);
++        viewerInventories.remove(player.getUniqueId());
++        return true;
++    }
++
++    @Override
++    public boolean handleExternalInventoryOpen(@NotNull Player player) {
++        final PacketGuiSession session = sessions.get(player.getUniqueId());
++        if (session == null) return false;
++
++        closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true);
++        return true;
++    }
++
++    @Override
++    public boolean isPacketBackend() {
++        return available;
++    }
++
++    void open(@NotNull BukkitViewer viewer, @NotNull PacketViewContainer container) {
++        if (!Bukkit.isPrimaryThread()) {
++            runMain(() -> open(viewer, container));
++            return;
++        }
++
++        final Player player = viewer.getPlayer();
++        final User user = user(player.getUniqueId());
++        if (user == null) {
++            owner.getLogger()
++                    .warning("Unable to open packet GUI for " + player.getName()
++                            + ": PacketEvents has no user for this player.");
++            return;
++        }
++
++        final PacketGuiSession previous = sessions.get(player.getUniqueId());
++        if (previous != null) {
++            closeSession(previous, false, CLOSE_ORIGIN_SERVER, true);
++        }
++
++        final PacketViewerInventory viewerInventory = inventoryFor(player.getUniqueId());
++        viewerInventory.snapshotFrom(player);
++
++        final PacketGuiSession session =
++                new PacketGuiSession(viewer, user, allocateWindowId(), container, viewerInventory);
++        sessions.put(player.getUniqueId(), session);
++        fullResync(session, true);
++    }
++
++    void close(@NotNull PacketViewContainer container, boolean sendClosePacket) {
++        for (final PacketGuiSession session : List.copyOf(sessions.values())) {
++            if (session.container() == container) {
++                closeSession(session, sendClosePacket, CLOSE_ORIGIN_SERVER, true);
++            }
++        }
++    }
++
++    void close(@NotNull PacketViewContainer container, @NotNull BukkitViewer viewer, boolean sendClosePacket) {
++        final PacketGuiSession session = sessions.get(viewer.getPlayer().getUniqueId());
++        if (session == null || session.container() != container) {
++            return;
++        }
++
++        closeSession(session, sendClosePacket, CLOSE_ORIGIN_SERVER, true);
++    }
++
++    void requestResync(@NotNull PacketViewContainer container) {
++        for (final PacketGuiSession session : sessions.values()) {
++            if (session.container() != container || !session.markResyncScheduled()) {
++                continue;
++            }
++
++            runMain(() -> {
++                session.clearResyncScheduled();
++                fullResync(session, false);
++            });
++        }
++    }
++
++    void requestReopen(@NotNull PacketViewContainer container, @NotNull BukkitViewer viewer) {
++        final PacketGuiSession session = sessions.get(viewer.getPlayer().getUniqueId());
++        if (session == null || session.container() != container) {
++            return;
++        }
++
++        runMain(() -> fullResync(session, true));
++    }
++
++    boolean isGuiWindow(User user, int windowId) {
++        if (user == null || user.getUUID() == null) {
++            return false;
++        }
++
++        final PacketGuiSession session = sessions.get(user.getUUID());
++        return isTracked(session) && session.windowId() == windowId;
++    }
++
++    void handleWindowClick(User user, PacketGuiClick click) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        final PacketGuiSession session = sessions.get(user.getUUID());
++        if (!isTracked(session) || session.windowId() != click.windowId()) {
++            return;
++        }
++
++        if (!click.isSafeTopPickup(session.container().getSize())) {
++            runMain(() -> fullResync(session, false));
++            return;
++        }
++
++        runMain(() -> handleSafeTopClick(session, click));
++    }
++
++    void handleWindowClose(User user, int windowId) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        final PacketGuiSession session = sessions.get(user.getUUID());
++        if (!isTracked(session) || session.windowId() != windowId) {
++            return;
++        }
++
++        runMain(() -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true));
++    }
++
++    void handleExternalInventoryOpen(User user, int windowId, int topSize) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        if (!isGuiWindow(user, windowId)) {
++            inventoryFor(user.getUUID()).setOpenWindow(windowId, topSize);
++        }
++
++        final PacketGuiSession session = sessions.get(user.getUUID());
++        if (session != null && !isGuiWindow(user, windowId)) {
++            runMain(() -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true));
++        }
++    }
++
++    void handleInventoryClosePacket(User user, int windowId) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        inventoryFor(user.getUUID()).closeWindow(windowId);
++    }
++
++    void handleDisconnect(UUID viewerId) {
++        if (viewerId == null) {
++            return;
++        }
++
++        final PacketGuiSession session = sessions.get(viewerId);
++        if (session != null) {
++            closeSession(session, false, CLOSE_ORIGIN_QUIT, false);
++        }
++        viewerInventories.remove(viewerId);
++    }
++
++    void trackWindowItems(
++            User user,
++            int windowId,
++            List<com.github.retrooper.packetevents.protocol.item.ItemStack> items,
++            com.github.retrooper.packetevents.protocol.item.ItemStack carried) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        final PacketViewerInventory inventory = inventoryFor(user.getUUID());
++        if (windowId == PacketInventoryConstants.PLAYER_WINDOW_ID) {
++            inventory.applyPlayerWindowItems(items, carried);
++            return;
++        }
++
++        inventory.applyContainerWindowItems(windowId, items, carried);
++    }
++
++    void trackPlayerInventorySlot(
++            User user, int slot, com.github.retrooper.packetevents.protocol.item.ItemStack item) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        inventoryFor(user.getUUID()).applySlot(PacketInventoryConstants.playerInventorySlotToContainerSlot(slot), item);
++    }
++
++    void trackWindowSlot(
++            User user, int windowId, int slot, com.github.retrooper.packetevents.protocol.item.ItemStack item) {
++        if (user == null || user.getUUID() == null || slot < 0) {
++            return;
++        }
++
++        final PacketViewerInventory inventory = inventoryFor(user.getUUID());
++        if (windowId == PacketInventoryConstants.PLAYER_WINDOW_ID) {
++            inventory.applySlot(slot, item);
++            return;
++        }
++
++        final PacketGuiSession session = sessions.get(user.getUUID());
++        final int mappedSlot = isTracked(session) && session.windowId() == windowId
++                ? PacketViewerInventory.mapGuiContainerSlotToPlayerSlot(session.container().getSize(), slot)
++                : inventory.mapContainerSlotToPlayerSlot(windowId, slot);
++        if (mappedSlot >= 0) {
++            inventory.applySlot(mappedSlot, item);
++        }
++    }
++
++    void trackCursor(User user, com.github.retrooper.packetevents.protocol.item.ItemStack item) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        inventoryFor(user.getUUID()).applyCursor(item);
++    }
++
++    private void handleSafeTopClick(PacketGuiSession session, PacketGuiClick click) {
++        if (!isTracked(session)) {
++            return;
++        }
++
++        final IFRenderContext context = session.context();
++        final Component clickedComponent = context.getComponentsAt(click.slot()).stream()
++                .filter(Component::isVisible)
++                .findFirst()
++                .orElse(null);
++
++        final PacketSlotClickOrigin origin = new PacketSlotClickOrigin(
++                session.player(),
++                session.container().item(click.slot()),
++                click,
++                click.slot(),
++                click.clickIdentifier(),
++                click.isLeftClick(),
++                click.isRightClick(),
++                false,
++                false,
++                false,
++                false,
++                false);
++
++        try {
++            final IFSlotClickContext clickContext = context.getRoot()
++                    .getElementFactory()
++                    .createSlotClickContext(
++                            click.slot(),
++                            session.viewer(),
++                            context.getContainer(),
++                            clickedComponent,
++                            origin,
++                            false);
++
++            context.getRoot().getPipeline().execute(StandardPipelinePhases.CLICK, clickContext);
++        } catch (final RuntimeException exception) {
++            owner.getLogger().log(Level.SEVERE, "An error occurred while processing a packet GUI click", exception);
++            closeSession(session, true, CLOSE_ORIGIN_SERVER, true);
++            return;
++        }
++
++        fullResync(session, false);
++    }
++
++    private void fullResync(PacketGuiSession session, boolean forceReopen) {
++        if (!Bukkit.isPrimaryThread()) {
++            runMain(() -> fullResync(session, forceReopen));
++            return;
++        }
++
++        if (!isTracked(session)) {
++            return;
++        }
++
++        session.viewerInventory().snapshotFrom(session.player());
++        final PacketGuiRender render = PacketGuiRender.from(session.container(), session.viewer().getId());
++        final PacketGuiRender previous = session.appliedRender();
++        session.currentRender(render);
++
++        try {
++            if (forceReopen || !render.sameWindow(previous)) {
++                sendOpenWindow(session, render);
++            }
++
++            sendWindowItems(session, render);
++            sendCursor(session);
++            session.appliedRender(render);
++        } catch (final RuntimeException exception) {
++            owner.getLogger().log(Level.WARNING, "Failed to send packet GUI render", exception);
++            closeSession(session, false, CLOSE_ORIGIN_SERVER, true);
++        }
++    }
++
++    private void sendOpenWindow(PacketGuiSession session, PacketGuiRender render) {
++        final ServerVersion version = PacketEvents.getAPI().getServerManager().getVersion();
++        final WrapperPlayServerOpenWindow packet;
++        if (version.isNewerThanOrEquals(ServerVersion.V_1_14)) {
++            packet = new WrapperPlayServerOpenWindow(session.windowId(), render.rows() - 1, render.title());
++        } else {
++            packet = new WrapperPlayServerOpenWindow(
++                    session.windowId(), "minecraft:chest", render.title(), render.size(), 0);
++        }
++
++        session.user().sendPacket(packet);
++    }
++
++    private void sendWindowItems(PacketGuiSession session, PacketGuiRender render) {
++        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items =
++                new ArrayList<>(render.size() + 36);
++        items.addAll(render.packetTopItems());
++        items.addAll(session.viewerInventory().mainAndHotbarItems());
++
++        session.user()
++                .sendPacket(new WrapperPlayServerWindowItems(
++                        session.windowId(),
++                        session.nextStateId(),
++                        items,
++                        session.viewerInventory().cursor()));
++    }
++
++    private void sendCursor(PacketGuiSession session) {
++        session.user().sendPacket(new WrapperPlayServerSetCursorItem(session.viewerInventory().cursor()));
++    }
++
++    private boolean closeSession(PacketGuiSession session, boolean sendClosePacket, Object origin, boolean callClose) {
++        if (session == null) {
++            return false;
++        }
++
++        synchronized (session) {
++            if (session.closed()) {
++                return false;
++            }
++            session.closeRequested(true);
++            session.closed(true);
++        }
++
++        sessions.remove(session.viewerId(), session);
++
++        if (sendClosePacket) {
++            try {
++                sendCursor(session);
++                session.user().sendPacket(new WrapperPlayServerCloseWindow(session.windowId()));
++            } catch (final RuntimeException exception) {
++                owner.getLogger().log(Level.WARNING, "Failed to send packet GUI close packet", exception);
++            }
++        }
++
++        if (callClose) {
++            executeClosePipeline(session, origin);
++        }
++
++        return true;
++    }
++
++    private void executeClosePipeline(PacketGuiSession session, Object origin) {
++        final IFRenderContext context = session.context();
++        final RootView root = context.getRoot();
++        final Viewer viewer = session.viewer();
++        final IFCloseContext closeContext = root.getElementFactory().createCloseContext(viewer, context, origin);
++        root.getPipeline().execute(StandardPipelinePhases.CLOSE, closeContext);
++    }
++
++    private PacketViewerInventory inventoryFor(UUID viewerId) {
++        return viewerInventories.computeIfAbsent(viewerId, ignored -> new PacketViewerInventory());
++    }
++
++    private User user(UUID viewerId) {
++        final Object channel = PacketEvents.getAPI().getProtocolManager().getChannel(viewerId);
++        return channel == null ? null : PacketEvents.getAPI().getProtocolManager().getUser(channel);
++    }
++
++    private boolean isTracked(PacketGuiSession session) {
++        return session != null && !session.closed() && sessions.get(session.viewerId()) == session;
++    }
++
++    private int allocateWindowId() {
++        return Math.max(1, nextWindowId.getAndUpdate(previous -> previous >= MAX_WINDOW_ID ? 1 : previous + 1));
++    }
++
++    private void runMain(Runnable task) {
++        if (Bukkit.isPrimaryThread()) {
++            task.run();
++            return;
++        }
++
++        Bukkit.getScheduler().runTask(owner, task);
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
+new file mode 100644
+index 00000000..ba07a12d
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
+@@ -0,0 +1,73 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
++
++final class PacketGuiClick {
++
++    private final int windowId;
++    private final int slot;
++    private final int button;
++    private final WrapperPlayClientClickWindow.WindowClickType clickType;
++
++    private PacketGuiClick(
++            int windowId, int slot, int button, WrapperPlayClientClickWindow.WindowClickType clickType) {
++        this.windowId = windowId;
++        this.slot = slot;
++        this.button = button;
++        this.clickType = clickType;
++    }
++
++    static PacketGuiClick from(WrapperPlayClientClickWindow packet) {
++        return new PacketGuiClick(
++                packet.getWindowId(),
++                packet.getSlot(),
++                packet.getButton(),
++                packet.getWindowClickType());
++    }
++
++    int windowId() {
++        return windowId;
++    }
++
++    int slot() {
++        return slot;
++    }
++
++    int button() {
++        return button;
++    }
++
++    boolean isSafeTopPickup(int topSize) {
++        return clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP
++                && slot >= 0
++                && slot < topSize
++                && (button == 0 || button == 1);
++    }
++
++    boolean isLeftClick() {
++        return clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP && button == 0;
++    }
++
++    boolean isRightClick() {
++        return clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP && button == 1;
++    }
++
++    String clickIdentifier() {
++        if (clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP) {
++            if (button == 0) return "LEFT";
++            if (button == 1) return "RIGHT";
++        }
++
++        return clickType.name();
++    }
++
++    @Override
++    public String toString() {
++        return "PacketGuiClick{"
++                + "windowId=" + windowId
++                + ", slot=" + slot
++                + ", button=" + button
++                + ", clickType=" + clickType
++                + '}';
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
+new file mode 100644
+index 00000000..b10d5a0e
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
+@@ -0,0 +1,122 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import com.github.retrooper.packetevents.event.PacketListenerAbstract;
++import com.github.retrooper.packetevents.event.PacketListenerPriority;
++import com.github.retrooper.packetevents.event.PacketReceiveEvent;
++import com.github.retrooper.packetevents.event.PacketSendEvent;
++import com.github.retrooper.packetevents.event.UserDisconnectEvent;
++import com.github.retrooper.packetevents.protocol.ConnectionState;
++import com.github.retrooper.packetevents.protocol.item.ItemStack;
++import com.github.retrooper.packetevents.protocol.packettype.PacketType;
++import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
++import com.github.retrooper.packetevents.protocol.player.User;
++import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
++import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientCloseWindow;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCloseWindow;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenHorseWindow;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenWindow;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetCursorItem;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPlayerInventory;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetSlot;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerWindowItems;
++
++final class PacketGuiPacketListener extends PacketListenerAbstract {
++
++    private final PacketGuiBackend backend;
++
++    PacketGuiPacketListener(PacketGuiBackend backend) {
++        super(PacketListenerPriority.HIGH);
++        this.backend = backend;
++    }
++
++    @Override
++    public void onPacketReceive(PacketReceiveEvent event) {
++        if (event.getConnectionState() != ConnectionState.PLAY) {
++            return;
++        }
++
++        final PacketTypeCommon packetType = event.getPacketType();
++        if (packetType == PacketType.Play.Client.CLICK_WINDOW) {
++            final WrapperPlayClientClickWindow packet = new WrapperPlayClientClickWindow(event);
++            if (!backend.isGuiWindow(event.getUser(), packet.getWindowId())) {
++                return;
++            }
++
++            event.setCancelled(true);
++            backend.handleWindowClick(event.getUser(), PacketGuiClick.from(packet));
++            return;
++        }
++
++        if (packetType == PacketType.Play.Client.CLOSE_WINDOW) {
++            final WrapperPlayClientCloseWindow packet = new WrapperPlayClientCloseWindow(event);
++            if (!backend.isGuiWindow(event.getUser(), packet.getWindowId())) {
++                return;
++            }
++
++            event.setCancelled(true);
++            backend.handleWindowClose(event.getUser(), packet.getWindowId());
++        }
++    }
++
++    @Override
++    public void onPacketSend(PacketSendEvent event) {
++        if (event.getConnectionState() != ConnectionState.PLAY) {
++            return;
++        }
++
++        final User user = event.getUser();
++        final PacketTypeCommon packetType = event.getPacketType();
++        if (packetType == PacketType.Play.Server.WINDOW_ITEMS) {
++            final WrapperPlayServerWindowItems packet = new WrapperPlayServerWindowItems(event);
++            final ItemStack carried = packet.getCarriedItem().orElse(ItemStack.EMPTY);
++            backend.trackWindowItems(user, packet.getWindowId(), packet.getItems(), carried);
++            return;
++        }
++
++        if (packetType == PacketType.Play.Server.SET_PLAYER_INVENTORY) {
++            final WrapperPlayServerSetPlayerInventory packet = new WrapperPlayServerSetPlayerInventory(event);
++            backend.trackPlayerInventorySlot(user, packet.getSlot(), packet.getStack());
++            return;
++        }
++
++        if (packetType == PacketType.Play.Server.SET_SLOT) {
++            final WrapperPlayServerSetSlot packet = new WrapperPlayServerSetSlot(event);
++            backend.trackWindowSlot(user, packet.getWindowId(), packet.getSlot(), packet.getItem());
++            return;
++        }
++
++        if (packetType == PacketType.Play.Server.SET_CURSOR_ITEM) {
++            final WrapperPlayServerSetCursorItem packet = new WrapperPlayServerSetCursorItem(event);
++            backend.trackCursor(user, packet.getStack());
++            return;
++        }
++
++        if (packetType == PacketType.Play.Server.OPEN_WINDOW) {
++            final WrapperPlayServerOpenWindow packet = new WrapperPlayServerOpenWindow(event);
++            if (!backend.isGuiWindow(user, packet.getContainerId())) {
++                backend.handleExternalInventoryOpen(user, packet.getContainerId(), -1);
++            }
++            return;
++        }
++
++        if (packetType == PacketType.Play.Server.OPEN_HORSE_WINDOW) {
++            final WrapperPlayServerOpenHorseWindow packet = new WrapperPlayServerOpenHorseWindow(event);
++            backend.handleExternalInventoryOpen(user, packet.getWindowId(), packet.getSlotCount());
++            return;
++        }
++
++        if (packetType == PacketType.Play.Server.CLOSE_WINDOW) {
++            final WrapperPlayServerCloseWindow packet = new WrapperPlayServerCloseWindow(event);
++            backend.handleInventoryClosePacket(user, packet.getWindowId());
++        }
++    }
++
++    @Override
++    public void onUserDisconnect(UserDisconnectEvent event) {
++        if (event.getUser() == null) {
++            return;
++        }
++
++        backend.handleDisconnect(event.getUser().getUUID());
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
+new file mode 100644
+index 00000000..8d6fd461
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
+@@ -0,0 +1,99 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.List;
++import java.util.Objects;
++import net.kyori.adventure.text.Component;
++import org.bukkit.inventory.ItemStack;
++
++final class PacketGuiRender {
++
++    private final Object rawTitle;
++    private final Component title;
++    private final int rows;
++    private final ItemStack[] topItems;
++
++    private PacketGuiRender(Object rawTitle, Component title, int rows, ItemStack[] topItems) {
++        this.rawTitle = rawTitle;
++        this.title = title;
++        this.rows = rows;
++        this.topItems = topItems;
++    }
++
++    static PacketGuiRender from(PacketViewContainer container) {
++        final ItemStack[] topItems = container.snapshotItems();
++        return new PacketGuiRender(
++                container.getRawTitle(null),
++                titleComponent(container.getRawTitle(null)),
++                Math.max(1, container.getRowsCount()),
++                topItems);
++    }
++
++    static PacketGuiRender from(PacketViewContainer container, String viewerId) {
++        final ItemStack[] topItems = container.snapshotItems();
++        return new PacketGuiRender(
++                container.getRawTitle(viewerId),
++                titleComponent(container.getRawTitle(viewerId)),
++                Math.max(1, container.getRowsCount()),
++                topItems);
++    }
++
++    Component title() {
++        return title;
++    }
++
++    int rows() {
++        return rows;
++    }
++
++    int size() {
++        return topItems.length;
++    }
++
++    ItemStack bukkitItem(int slot) {
++        final ItemStack item = topItems[slot];
++        return item == null ? null : item.clone();
++    }
++
++    List<com.github.retrooper.packetevents.protocol.item.ItemStack> packetTopItems() {
++        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items = new ArrayList<>(topItems.length);
++        for (final ItemStack item : topItems) {
++            items.add(PacketItemConverter.toPacket(item));
++        }
++        return items;
++    }
++
++    boolean sameWindow(PacketGuiRender other) {
++        return other != null && rows == other.rows && Objects.equals(rawTitle, other.rawTitle);
++    }
++
++    @Override
++    public boolean equals(Object o) {
++        if (this == o) return true;
++        if (!(o instanceof PacketGuiRender)) return false;
++        final PacketGuiRender that = (PacketGuiRender) o;
++        return rows == that.rows
++                && Objects.equals(rawTitle, that.rawTitle)
++                && Arrays.equals(topItems, that.topItems);
++    }
++
++    @Override
++    public int hashCode() {
++        int result = Objects.hash(rawTitle, rows);
++        result = 31 * result + Arrays.hashCode(topItems);
++        return result;
++    }
++
++    private static Component titleComponent(Object title) {
++        if (title instanceof Component) {
++            return (Component) title;
++        }
++
++        if (title == null) {
++            return Component.empty();
++        }
++
++        return Component.text(String.valueOf(title));
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
+new file mode 100644
+index 00000000..c70570ac
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
+@@ -0,0 +1,116 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import com.github.retrooper.packetevents.protocol.player.User;
++import java.util.UUID;
++import java.util.concurrent.atomic.AtomicBoolean;
++import me.devnatan.inventoryframework.BukkitViewer;
++import me.devnatan.inventoryframework.context.IFRenderContext;
++import org.bukkit.entity.Player;
++
++final class PacketGuiSession {
++
++    private final UUID viewerId;
++    private final BukkitViewer viewer;
++    private final Player player;
++    private final User user;
++    private final int windowId;
++    private final PacketViewContainer container;
++    private final PacketViewerInventory viewerInventory;
++    private final AtomicBoolean resyncScheduled = new AtomicBoolean();
++    private PacketGuiRender currentRender;
++    private PacketGuiRender appliedRender;
++    private boolean closed;
++    private boolean closeRequested;
++    private int stateId = 1;
++
++    PacketGuiSession(
++            BukkitViewer viewer,
++            User user,
++            int windowId,
++            PacketViewContainer container,
++            PacketViewerInventory viewerInventory) {
++        this.viewer = viewer;
++        this.player = viewer.getPlayer();
++        this.viewerId = player.getUniqueId();
++        this.user = user;
++        this.windowId = windowId;
++        this.container = container;
++        this.viewerInventory = viewerInventory;
++    }
++
++    synchronized UUID viewerId() {
++        return viewerId;
++    }
++
++    synchronized BukkitViewer viewer() {
++        return viewer;
++    }
++
++    synchronized Player player() {
++        return player;
++    }
++
++    synchronized User user() {
++        return user;
++    }
++
++    synchronized int windowId() {
++        return windowId;
++    }
++
++    synchronized PacketViewContainer container() {
++        return container;
++    }
++
++    synchronized IFRenderContext context() {
++        return container.getContext();
++    }
++
++    synchronized PacketViewerInventory viewerInventory() {
++        return viewerInventory;
++    }
++
++    synchronized PacketGuiRender currentRender() {
++        return currentRender;
++    }
++
++    synchronized void currentRender(PacketGuiRender currentRender) {
++        this.currentRender = currentRender;
++    }
++
++    synchronized PacketGuiRender appliedRender() {
++        return appliedRender;
++    }
++
++    synchronized void appliedRender(PacketGuiRender appliedRender) {
++        this.appliedRender = appliedRender;
++    }
++
++    synchronized boolean closed() {
++        return closed;
++    }
++
++    synchronized void closed(boolean closed) {
++        this.closed = closed;
++    }
++
++    synchronized boolean closeRequested() {
++        return closeRequested;
++    }
++
++    synchronized void closeRequested(boolean closeRequested) {
++        this.closeRequested = closeRequested;
++    }
++
++    synchronized int nextStateId() {
++        return stateId++;
++    }
++
++    boolean markResyncScheduled() {
++        return resyncScheduled.compareAndSet(false, true);
++    }
++
++    void clearResyncScheduled() {
++        resyncScheduled.set(false);
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
+new file mode 100644
+index 00000000..aa6ab4ab
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
+@@ -0,0 +1,39 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++final class PacketInventoryConstants {
++
++    static final int PLAYER_WINDOW_ID = 0;
++    static final int INVENTORY_SIZE = 46;
++
++    static final int SLOT_HELMET = 5;
++    static final int SLOT_CHESTPLATE = 6;
++    static final int SLOT_LEGGINGS = 7;
++    static final int SLOT_BOOTS = 8;
++
++    static final int ITEMS_START = 9;
++    static final int HOTBAR_START = 36;
++    static final int SLOT_OFFHAND = 45;
++
++    private PacketInventoryConstants() {}
++
++    static int playerInventorySlotToContainerSlot(int playerInventorySlot) {
++        if (playerInventorySlot < 0) return -1;
++        if (playerInventorySlot <= 8) return HOTBAR_START + playerInventorySlot;
++        if (playerInventorySlot <= 35) return playerInventorySlot;
++
++        switch (playerInventorySlot) {
++            case 36:
++                return SLOT_BOOTS;
++            case 37:
++                return SLOT_LEGGINGS;
++            case 38:
++                return SLOT_CHESTPLATE;
++            case 39:
++                return SLOT_HELMET;
++            case 40:
++                return SLOT_OFFHAND;
++            default:
++                return -1;
++        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
+new file mode 100644
+index 00000000..bccc4cfc
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
+@@ -0,0 +1,37 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import io.github.retrooper.packetevents.util.SpigotConversionUtil;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++
++final class PacketItemConverter {
++
++    private PacketItemConverter() {}
++
++    static com.github.retrooper.packetevents.protocol.item.ItemStack toPacket(ItemStack item) {
++        if (item == null || item.getType() == Material.AIR) {
++            return com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY;
++        }
++
++        final com.github.retrooper.packetevents.protocol.item.ItemStack converted =
++                SpigotConversionUtil.fromBukkitItemStack(item);
++        return converted == null || converted.isEmpty()
++                ? com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY
++                : converted.copy();
++    }
++
++    static ItemStack toBukkit(com.github.retrooper.packetevents.protocol.item.ItemStack item) {
++        if (item == null || item.isEmpty()) {
++            return null;
++        }
++
++        return SpigotConversionUtil.toBukkitItemStack(item.copy());
++    }
++
++    static com.github.retrooper.packetevents.protocol.item.ItemStack copy(
++            com.github.retrooper.packetevents.protocol.item.ItemStack item) {
++        return item == null || item.isEmpty()
++                ? com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY
++                : item.copy();
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
+new file mode 100644
+index 00000000..8e578b11
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
+@@ -0,0 +1,229 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.util.Arrays;
++import java.util.Map;
++import java.util.Objects;
++import java.util.concurrent.ConcurrentHashMap;
++import me.devnatan.inventoryframework.BukkitViewer;
++import me.devnatan.inventoryframework.ViewContainer;
++import me.devnatan.inventoryframework.ViewType;
++import me.devnatan.inventoryframework.Viewer;
++import me.devnatan.inventoryframework.context.IFRenderContext;
++import org.bukkit.inventory.ItemStack;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++public final class PacketViewContainer implements ViewContainer {
++
++    private final PacketGuiBackend backend;
++    private final IFRenderContext context;
++    private final ViewType type;
++    private final int size;
++    private final ItemStack[] topItems;
++    private final Map<String, Object> viewerTitles = new ConcurrentHashMap<>();
++    private Object title;
++
++    PacketViewContainer(
++            @NotNull PacketGuiBackend backend,
++            @NotNull IFRenderContext context,
++            @NotNull ViewType type,
++            int size,
++            Object title) {
++        this.backend = backend;
++        this.context = context;
++        this.type = type;
++        this.size = size == 0 ? type.getMaxSize() : size;
++        this.title = title;
++        this.topItems = new ItemStack[this.size];
++    }
++
++    IFRenderContext getContext() {
++        return context;
++    }
++
++    Object getRawTitle(@Nullable String viewerId) {
++        if (viewerId != null && viewerTitles.containsKey(viewerId)) {
++            return viewerTitles.get(viewerId);
++        }
++
++        return title;
++    }
++
++    ItemStack[] snapshotItems() {
++        synchronized (topItems) {
++            final ItemStack[] snapshot = new ItemStack[topItems.length];
++            for (int slot = 0; slot < topItems.length; slot++) {
++                snapshot[slot] = topItems[slot] == null ? null : topItems[slot].clone();
++            }
++            return snapshot;
++        }
++    }
++
++    ItemStack item(int slot) {
++        synchronized (topItems) {
++            if (slot < 0 || slot >= topItems.length) return null;
++            return topItems[slot] == null ? null : topItems[slot].clone();
++        }
++    }
++
++    @Override
++    public String getTitle() {
++        return titleAsString(title);
++    }
++
++    @Override
++    public String getTitle(@NotNull Viewer viewer) {
++        return titleAsString(getRawTitle(viewer.getId()));
++    }
++
++    @Override
++    public @NotNull ViewType getType() {
++        return type;
++    }
++
++    @Override
++    public int getFirstSlot() {
++        return 0;
++    }
++
++    @Override
++    public int getLastSlot() {
++        return getSlotsCount();
++    }
++
++    @Override
++    public boolean hasItem(int slot) {
++        synchronized (topItems) {
++            return slot >= 0 && slot < topItems.length && topItems[slot] != null;
++        }
++    }
++
++    @Override
++    public void renderItem(int slot, Object item) {
++        requireSupportedItem(item);
++        synchronized (topItems) {
++            topItems[slot] = item == null ? null : ((ItemStack) item).clone();
++        }
++        backend.requestResync(this);
++    }
++
++    @Override
++    public void removeItem(int slot) {
++        synchronized (topItems) {
++            topItems[slot] = null;
++        }
++        backend.requestResync(this);
++    }
++
++    @Override
++    public boolean matchesItem(int slot, Object item, boolean exactly) {
++        requireSupportedItem(item);
++        final ItemStack target = item(slot);
++        if (target == null) return item == null;
++        if (item instanceof ItemStack) return exactly ? target.equals(item) : target.isSimilar((ItemStack) item);
++        return false;
++    }
++
++    @Override
++    public boolean isSupportedItem(Object item) {
++        return item == null || item instanceof ItemStack;
++    }
++
++    @Override
++    public int getSize() {
++        return size;
++    }
++
++    @Override
++    public int getSlotsCount() {
++        return size - 1;
++    }
++
++    @Override
++    public int getRowsCount() {
++        return getSize() / getColumnsCount();
++    }
++
++    @Override
++    public int getColumnsCount() {
++        return type.getColumns();
++    }
++
++    @Override
++    public void open(@NotNull Viewer viewer) {
++        backend.open((BukkitViewer) viewer, this);
++    }
++
++    @Override
++    public void close() {
++        backend.close(this, true);
++    }
++
++    @Override
++    public void close(@NotNull Viewer viewer) {
++        backend.close(this, (BukkitViewer) viewer, true);
++    }
++
++    @Override
++    public void changeTitle(@Nullable Object title, @NotNull Viewer target) {
++        if (title == null) {
++            viewerTitles.remove(target.getId());
++        } else {
++            viewerTitles.put(target.getId(), title);
++        }
++
++        backend.requestReopen(this, (BukkitViewer) target);
++    }
++
++    void changeBaseTitle(@Nullable Object title) {
++        this.title = title;
++        backend.requestResync(this);
++    }
++
++    @Override
++    public boolean isEntityContainer() {
++        return false;
++    }
++
++    @Override
++    public boolean isProxied() {
++        return false;
++    }
++
++    private void requireSupportedItem(Object item) {
++        if (isSupportedItem(item)) return;
++
++        throw new IllegalStateException("Unsupported item type: " + item.getClass().getName());
++    }
++
++    private static String titleAsString(Object title) {
++        return title == null ? "" : String.valueOf(title);
++    }
++
++    @Override
++    public boolean equals(Object o) {
++        if (this == o) return true;
++        if (!(o instanceof PacketViewContainer)) return false;
++        final PacketViewContainer that = (PacketViewContainer) o;
++        return size == that.size
++                && Objects.equals(context, that.context)
++                && Objects.equals(type, that.type)
++                && Arrays.equals(snapshotItems(), that.snapshotItems());
++    }
++
++    @Override
++    public int hashCode() {
++        int result = Objects.hash(context, type, size);
++        result = 31 * result + Arrays.hashCode(snapshotItems());
++        return result;
++    }
++
++    @Override
++    public String toString() {
++        return "PacketViewContainer{"
++                + "context=" + context
++                + ", type=" + type
++                + ", size=" + size
++                + '}';
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
+new file mode 100644
+index 00000000..19a018d5
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
+@@ -0,0 +1,162 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.List;
++import org.bukkit.entity.Player;
++import org.bukkit.inventory.PlayerInventory;
++
++final class PacketViewerInventory {
++
++    private final com.github.retrooper.packetevents.protocol.item.ItemStack[] slots =
++            new com.github.retrooper.packetevents.protocol.item.ItemStack[PacketInventoryConstants.INVENTORY_SIZE];
++    private final boolean[] knownSlots = new boolean[PacketInventoryConstants.INVENTORY_SIZE];
++    private com.github.retrooper.packetevents.protocol.item.ItemStack cursor =
++            com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY;
++    private boolean cursorKnown;
++    private int openWindowId = PacketInventoryConstants.PLAYER_WINDOW_ID;
++    private int openWindowTopSize = PacketInventoryConstants.INVENTORY_SIZE;
++
++    PacketViewerInventory() {
++        Arrays.fill(slots, com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY);
++    }
++
++    synchronized void snapshotFrom(Player player) {
++        final PlayerInventory inventory = player.getInventory();
++
++        for (int slot = 0; slot <= 35; slot++) {
++            applySlot(PacketInventoryConstants.playerInventorySlotToContainerSlot(slot), PacketItemConverter.toPacket(inventory.getItem(slot)));
++        }
++
++        applySlot(PacketInventoryConstants.SLOT_HELMET, PacketItemConverter.toPacket(inventory.getHelmet()));
++        applySlot(PacketInventoryConstants.SLOT_CHESTPLATE, PacketItemConverter.toPacket(inventory.getChestplate()));
++        applySlot(PacketInventoryConstants.SLOT_LEGGINGS, PacketItemConverter.toPacket(inventory.getLeggings()));
++        applySlot(PacketInventoryConstants.SLOT_BOOTS, PacketItemConverter.toPacket(inventory.getBoots()));
++        applySlot(PacketInventoryConstants.SLOT_OFFHAND, PacketItemConverter.toPacket(inventory.getItemInOffHand()));
++        applyCursor(PacketItemConverter.toPacket(player.getItemOnCursor()));
++    }
++
++    synchronized void applyPlayerWindowItems(
++            List<com.github.retrooper.packetevents.protocol.item.ItemStack> items,
++            com.github.retrooper.packetevents.protocol.item.ItemStack carried) {
++        Arrays.fill(slots, com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY);
++        Arrays.fill(knownSlots, false);
++
++        final int limit = Math.min(items.size(), PacketInventoryConstants.INVENTORY_SIZE);
++        for (int slot = 0; slot < limit; slot++) {
++            slots[slot] = PacketItemConverter.copy(items.get(slot));
++            knownSlots[slot] = true;
++        }
++
++        applyCursor(carried);
++        resetOpenWindow();
++    }
++
++    synchronized void applyContainerWindowItems(
++            int windowId,
++            List<com.github.retrooper.packetevents.protocol.item.ItemStack> items,
++            com.github.retrooper.packetevents.protocol.item.ItemStack carried) {
++        if (items.size() >= 36) {
++            setOpenWindow(windowId, items.size() - 36);
++            final int playerSectionStart = items.size() - 36;
++
++            for (int index = 0; index < 27; index++) {
++                applySlot(PacketInventoryConstants.ITEMS_START + index, items.get(playerSectionStart + index));
++            }
++
++            for (int index = 0; index < 9; index++) {
++                applySlot(PacketInventoryConstants.HOTBAR_START + index, items.get(playerSectionStart + 27 + index));
++            }
++        }
++
++        applyCursor(carried);
++    }
++
++    synchronized void applySlot(int slot, com.github.retrooper.packetevents.protocol.item.ItemStack item) {
++        if (slot < 0 || slot >= PacketInventoryConstants.INVENTORY_SIZE) {
++            return;
++        }
++
++        slots[slot] = PacketItemConverter.copy(item);
++        knownSlots[slot] = true;
++    }
++
++    synchronized void applyCursor(com.github.retrooper.packetevents.protocol.item.ItemStack item) {
++        cursor = PacketItemConverter.copy(item);
++        cursorKnown = true;
++    }
++
++    synchronized boolean isKnown(int slot) {
++        return slot >= 0 && slot < PacketInventoryConstants.INVENTORY_SIZE && knownSlots[slot];
++    }
++
++    synchronized com.github.retrooper.packetevents.protocol.item.ItemStack item(int slot) {
++        if (!isKnown(slot)) {
++            return com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY;
++        }
++
++        return PacketItemConverter.copy(slots[slot]);
++    }
++
++    synchronized com.github.retrooper.packetevents.protocol.item.ItemStack cursor() {
++        return cursorKnown ? PacketItemConverter.copy(cursor) : com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY;
++    }
++
++    synchronized List<com.github.retrooper.packetevents.protocol.item.ItemStack> mainAndHotbarItems() {
++        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items = new ArrayList<>(36);
++        appendRange(items, PacketInventoryConstants.ITEMS_START, 27);
++        appendRange(items, PacketInventoryConstants.HOTBAR_START, 9);
++        return items;
++    }
++
++    synchronized void setOpenWindow(int windowId, int topSize) {
++        openWindowId = windowId;
++        openWindowTopSize = topSize;
++    }
++
++    synchronized void closeWindow(int windowId) {
++        if (openWindowId == windowId) {
++            resetOpenWindow();
++        }
++    }
++
++    synchronized int mapContainerSlotToPlayerSlot(int windowId, int containerSlot) {
++        if (windowId == PacketInventoryConstants.PLAYER_WINDOW_ID) {
++            return containerSlot;
++        }
++
++        if (windowId != openWindowId || openWindowTopSize < 0) {
++            return -1;
++        }
++
++        return mapGuiContainerSlotToPlayerSlot(openWindowTopSize, containerSlot);
++    }
++
++    static int mapGuiContainerSlotToPlayerSlot(int topSize, int containerSlot) {
++        final int relativeSlot = containerSlot - topSize;
++        if (relativeSlot < 0) {
++            return -1;
++        }
++
++        if (relativeSlot < 27) {
++            return PacketInventoryConstants.ITEMS_START + relativeSlot;
++        }
++
++        if (relativeSlot < 36) {
++            return PacketInventoryConstants.HOTBAR_START + (relativeSlot - 27);
++        }
++
++        return -1;
++    }
++
++    private void appendRange(List<com.github.retrooper.packetevents.protocol.item.ItemStack> items, int sourceStart, int amount) {
++        for (int index = 0; index < amount; index++) {
++            items.add(item(sourceStart + index));
++        }
++    }
++
++    private void resetOpenWindow() {
++        openWindowId = PacketInventoryConstants.PLAYER_WINDOW_ID;
++        openWindowTopSize = PacketInventoryConstants.INVENTORY_SIZE;
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
+index ec3bd553..b5888370 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
+@@ -4,7 +4,6 @@ import static me.devnatan.inventoryframework.ViewConfig.CANCEL_ON_CLICK;
+ 
+ import me.devnatan.inventoryframework.VirtualView;
+ import me.devnatan.inventoryframework.context.SlotClickContext;
+-import org.bukkit.event.inventory.InventoryClickEvent;
+ import org.jetbrains.annotations.NotNull;
+ 
+ /**
+@@ -18,10 +17,9 @@ public final class GlobalClickInterceptor implements PipelineInterceptor<Virtual
+         if (!(subject instanceof SlotClickContext)) return;
+ 
+         final SlotClickContext context = (SlotClickContext) subject;
+-        final InventoryClickEvent event = context.getClickOrigin();
+ 
+         // inherit cancellation so we can un-cancel it
+-        context.setCancelled(event.isCancelled() || context.getConfig().isOptionSet(CANCEL_ON_CLICK, true));
++        context.setCancelled(context.isCancelled() || context.getConfig().isOptionSet(CANCEL_ON_CLICK, true));
+         context.getRoot().onClick(context);
+     }
+ }
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java
+index db6b8c48..4047e6e7 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java
+@@ -4,8 +4,6 @@ import me.devnatan.inventoryframework.VirtualView;
+ import me.devnatan.inventoryframework.component.Component;
+ import me.devnatan.inventoryframework.component.ItemComponent;
+ import me.devnatan.inventoryframework.context.SlotClickContext;
+-import org.bukkit.event.inventory.InventoryClickEvent;
+-import org.bukkit.event.inventory.InventoryType;
+ import org.jetbrains.annotations.NotNull;
+ 
+ /**
+@@ -18,8 +16,7 @@ public final class ItemClickInterceptor implements PipelineInterceptor<VirtualVi
+         if (!(subject instanceof SlotClickContext)) return;
+ 
+         final SlotClickContext context = (SlotClickContext) subject;
+-        final InventoryClickEvent event = context.getClickOrigin();
+-        if (event.getSlotType() == InventoryType.SlotType.OUTSIDE) return;
++        if (context.isOutsideClick()) return;
+ 
+         final Component component = context.getComponent();
+         if (component == null) return;
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java
+index 6499f339..3f89ed26 100644
+--- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java
+@@ -4,8 +4,6 @@ import me.devnatan.inventoryframework.VirtualView;
+ import me.devnatan.inventoryframework.component.Component;
+ import me.devnatan.inventoryframework.component.ItemComponent;
+ import me.devnatan.inventoryframework.context.SlotClickContext;
+-import org.bukkit.event.inventory.InventoryClickEvent;
+-import org.bukkit.event.inventory.InventoryType;
+ import org.jetbrains.annotations.NotNull;
+ 
+ /**
+@@ -19,8 +17,7 @@ public final class ItemCloseOnClickInterceptor implements PipelineInterceptor<Vi
+         if (!(subject instanceof SlotClickContext)) return;
+ 
+         final SlotClickContext context = (SlotClickContext) subject;
+-        final InventoryClickEvent event = context.getClickOrigin();
+-        if (event.getSlotType() == InventoryType.SlotType.OUTSIDE) return;
++        if (context.isOutsideClick()) return;
+ 
+         final Component component = context.getComponent();
+         if (!(component instanceof ItemComponent) || !component.isVisible()) return;
+diff --git a/settings.gradle.kts b/settings.gradle.kts
+index 05585a2b..f26ceb55 100644
+--- a/settings.gradle.kts
++++ b/settings.gradle.kts
+@@ -10,6 +10,8 @@ dependencyResolutionManagement {
+         maven("https://oss.sonatype.org/content/repositories/snapshots")
+         maven("https://repo.papermc.io/repository/maven-public/")
+         maven("https://repo.tcoded.com/releases")
++        maven("https://repo.codemc.io/repository/maven-releases/")
++        maven("https://repo.codemc.io/repository/maven-snapshots/")
+     }
+ }
+ 
+-- 
+2.50.1.windows.1
+
