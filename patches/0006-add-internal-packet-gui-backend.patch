@@ -1857,7 +1857,7 @@ index 00000000..bccc4cfc
 @@ -0,0 +1,37 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
-import com.github.retrooper.packetevents.util.SpigotConversionUtil;
++import com.github.retrooper.packetevents.util.SpigotConversionUtil;
 +import org.bukkit.Material;
 +import org.bukkit.inventory.ItemStack;
 +
@@ -1998,30 +1998,30 @@ index 00000000..8e578b11
 +        }
 +    }
 +
-    @Override
-    public void renderItem(int slot, Object item) {
-        requireSupportedItem(item);
-        synchronized (topItems) {
-            if (slot < 0 || slot >= topItems.length) {
-                throw new IndexOutOfBoundsException(
-                        "Slot out of bounds: " + slot + " (size=" + topItems.length + ")");
-            }
-            topItems[slot] = item == null ? null : ((ItemStack) item).clone();
-        }
-        backend.requestResync(this);
-    }
-
-    @Override
-    public void removeItem(int slot) {
-        synchronized (topItems) {
-            if (slot < 0 || slot >= topItems.length) {
-                throw new IndexOutOfBoundsException(
-                        "Slot out of bounds: " + slot + " (size=" + topItems.length + ")");
-            }
-            topItems[slot] = null;
-        }
-        backend.requestResync(this);
-    }
++    @Override
++    public void renderItem(int slot, Object item) {
++        requireSupportedItem(item);
++        synchronized (topItems) {
++            if (slot < 0 || slot >= topItems.length) {
++                throw new IndexOutOfBoundsException(
++                        "Slot out of bounds: " + slot + " (size=" + topItems.length + ")");
++            }
++            topItems[slot] = item == null ? null : ((ItemStack) item).clone();
++        }
++        backend.requestResync(this);
++    }
++
++    @Override
++    public void removeItem(int slot) {
++        synchronized (topItems) {
++            if (slot < 0 || slot >= topItems.length) {
++                throw new IndexOutOfBoundsException(
++                        "Slot out of bounds: " + slot + " (size=" + topItems.length + ")");
++            }
++            topItems[slot] = null;
++        }
++        backend.requestResync(this);
++    }
 +
 +    @Override
 +    public boolean matchesItem(int slot, Object item, boolean exactly) {
@@ -2108,15 +2108,15 @@ index 00000000..8e578b11
 +        return title == null ? "" : String.valueOf(title);
 +    }
 +
-    @Override
-    public boolean equals(Object o) {
-        return this == o;
-    }
-
-    @Override
-    public int hashCode() {
-        return System.identityHashCode(this);
-    }
++    @Override
++    public boolean equals(Object o) {
++        return this == o;
++    }
++
++    @Override
++    public int hashCode() {
++        return System.identityHashCode(this);
++    }
 +
 +    @Override
 +    public String toString() {
