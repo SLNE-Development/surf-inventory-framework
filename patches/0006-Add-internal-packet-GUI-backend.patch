@@ -13,13 +13,13 @@ index 89850fa8d67a4ff08fbe5997ab94625e50c0cf19..daec84d3a7722c8390ae6624b01b84d5
  minestom = "b39badc77b"
  folialib = "0.5.1"
 +packetevents = "2.12.1"
-
+ 
  [libraries.spigot]
  module = "org.spigotmc:spigot-api"
 @@ -57,10 +58,14 @@ version.ref = "minestom"
  module = "com.tcoded:FoliaLib"
  version.ref = "folialib"
-
+ 
 +[libraries.packetevents-spigot]
 +module = "com.github.retrooper:packetevents-spigot"
 +version.ref = "packetevents"
@@ -59,7 +59,7 @@ index 16e4791981a4fd159659190b2ac3e1a961e28e90..78c704d7457a6fe653346e5d10037292
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
 @@ -52,7 +52,12 @@ public final class BukkitViewer implements Viewer {
-
+ 
      @Override
      public void open(@NotNull final ViewContainer container) {
 -        getPlayer().openInventory(((BukkitViewContainer) container).getInventory());
@@ -70,7 +70,7 @@ index 16e4791981a4fd159659190b2ac3e1a961e28e90..78c704d7457a6fe653346e5d10037292
 +
 +        container.open(this);
      }
-
+ 
      @Override
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954f050938e 100644
@@ -95,10 +95,10 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
  import org.bukkit.event.player.PlayerPickupItemEvent;
 @@ -24,9 +27,15 @@ import org.bukkit.inventory.PlayerInventory;
  final class IFInventoryListener implements Listener {
-
+ 
      private final ViewFrame viewFrame;
 +    private final GuiBackend guiBackend;
-
+ 
      public IFInventoryListener(ViewFrame viewFrame) {
 +        this(viewFrame, new BukkitGuiBackend());
 +    }
@@ -107,7 +107,7 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
          this.viewFrame = viewFrame;
 +        this.guiBackend = guiBackend;
      }
-
+ 
      @EventHandler
 @@ -39,6 +48,8 @@ final class IFInventoryListener implements Listener {
      @EventHandler
@@ -117,11 +117,11 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
 +
          final Viewer viewer = viewFrame.getViewer(player);
          if (viewer == null) return;
-
+ 
 @@ -49,6 +60,13 @@ final class IFInventoryListener implements Listener {
          root.getPipeline().execute(StandardPipelinePhases.CLOSE, closeContext);
      }
-
+ 
 +    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
 +    public void onInventoryOpen(final InventoryOpenEvent event) {
 +        if (!(event.getPlayer() instanceof Player)) return;
@@ -147,21 +147,21 @@ index 2d97a162afacb6aa9652d9d83079088761bbd35b..4dc75f811d1a888cee0851a70377ac76
  import org.bukkit.entity.Player;
 @@ -35,10 +37,12 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
                      + "https://github.com/DevNatan/inventory-framework/wiki/Installation#preventing-library-conflicts";
-
+ 
      private final Plugin owner;
 +    private final GuiBackend guiBackend;
      private final FeatureInstaller<ViewFrame> featureInstaller = new DefaultFeatureInstaller<>(this);
-
+ 
      private ViewFrame(Plugin owner) {
          this.owner = owner;
 +        this.guiBackend = GuiBackendFactory.create(owner);
      }
-
+ 
      @NotNull
 @@ -186,13 +190,14 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
      public final ViewFrame register() {
          if (isRegistered()) throw new IllegalStateException("This view frame is already registered");
-
+ 
 -        PlatformUtils.setFactory(new BukkitElementFactory(getOwner()));
 +        PlatformUtils.setFactory(new BukkitElementFactory(getOwner(), guiBackend));
 +        guiBackend.register();
@@ -174,14 +174,14 @@ index 2d97a162afacb6aa9652d9d83079088761bbd35b..4dc75f811d1a888cee0851a70377ac76
 +        getOwner().getServer().getPluginManager().registerEvents(new IFInventoryListener(this, guiBackend), getOwner());
          return this;
      }
-
+ 
 @@ -213,6 +218,7 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
              iterator.remove();
          }
          getPipeline().execute(IFViewFrame.FRAME_UNREGISTERED, this);
 +        guiBackend.unregister();
      }
-
+ 
      // region Internals
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
 new file mode 100644
@@ -423,7 +423,7 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..e1ccb7b9309017dbf69102f151151824
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
 @@ -169,6 +169,12 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
-
+ 
      @Override
      public @NotNull Inventory getInventory() {
 -        return ((BukkitViewContainer) getContainerOrThrow()).getInventory();
@@ -461,7 +461,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
 +    private final InventoryClickEvent inventoryClickOrigin;
      private final boolean combined;
      private boolean cancelled;
-
+ 
 @@ -32,19 +30,37 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
              @Nullable Component clickedComponent,
              @NotNull InventoryClickEvent clickOrigin,
@@ -492,7 +492,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
          this.combined = combined;
 +        this.cancelled = this.clickOrigin.isCancelled();
      }
-
+ 
      /**
       * The player who clicked on the slot.
       */
@@ -500,7 +500,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
 -        return (Player) clickOrigin.getWhoClicked();
 +        return clickOrigin.getPlayer();
      }
-
+ 
      /**
 @@ -55,7 +71,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
       */
@@ -513,7 +513,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
 +
 +        return inventoryClickOrigin;
      }
-
+ 
      /**
 @@ -84,12 +104,12 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      @Override
@@ -522,64 +522,64 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
 -        getClickOrigin().setCancelled(cancelled);
 +        clickOrigin.setCancelled(cancelled);
      }
-
+ 
      @Override
      public final Object getPlatformEvent() {
 -        return clickOrigin;
 +        return clickOrigin.getPlatformEvent();
      }
-
+ 
      @Override
 @@ -99,42 +119,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
-
+ 
      @Override
      public final boolean isLeftClick() {
 -        return getClickOrigin().isLeftClick();
 +        return clickOrigin.isLeftClick();
      }
-
+ 
      @Override
      public final boolean isRightClick() {
 -        return getClickOrigin().isRightClick();
 +        return clickOrigin.isRightClick();
      }
-
+ 
      @Override
      public final boolean isMiddleClick() {
 -        return getClickOrigin().getClick() == ClickType.MIDDLE;
 +        return clickOrigin.isMiddleClick();
      }
-
+ 
      @Override
      public final boolean isShiftClick() {
 -        return getClickOrigin().isShiftClick();
 +        return clickOrigin.isShiftClick();
      }
-
+ 
      @Override
      public final boolean isKeyboardClick() {
 -        return getClickOrigin().getClick().isKeyboardClick();
 +        return clickOrigin.isKeyboardClick();
      }
-
+ 
      @Override
      public final boolean isOutsideClick() {
 -        return getClickOrigin().getSlotType() == InventoryType.SlotType.OUTSIDE;
 +        return clickOrigin.isOutsideClick();
      }
-
+ 
      @Override
      public final String getClickIdentifier() {
 -        return getClickOrigin().getClick().name();
 +        return clickOrigin.getClickIdentifier();
      }
-
+ 
      @Override
      public final boolean isOnEntityContainer() {
 -        return getClickOrigin().getClickedInventory() instanceof PlayerInventory;
 +        return clickOrigin.isOnEntityContainer();
      }
-
+ 
      @Override
 @@ -176,4 +196,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      public final boolean isCombined() {
@@ -658,10 +658,10 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
  import org.jetbrains.annotations.Nullable;
 @@ -30,9 +26,15 @@ public class BukkitElementFactory extends ElementFactory {
      private Boolean worksInCurrentPlatform = null;
-
+ 
      private final FoliaLib foliaLib;
 +    private final GuiBackend guiBackend;
-
+ 
      public BukkitElementFactory(Plugin plugin) {
 +        this(plugin, new BukkitGuiBackend());
 +    }
@@ -670,12 +670,12 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
          this.foliaLib = new FoliaLib(plugin);
 +        this.guiBackend = guiBackend;
      }
-
+ 
      @Override
 @@ -57,11 +59,7 @@ public class BukkitElementFactory extends ElementFactory {
                      finalType.getMaxSize(),
                      context.getRoot().getClass().getName()));
-
+ 
 -        final InventoryHolder holder = context instanceof InventoryHolder ? (InventoryHolder) context : null;
 -        final Inventory inventory =
 -                InventoryFactory.current().createInventory(holder, finalType, size, config.getTitle());
@@ -683,7 +683,7 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
 -        return new BukkitViewContainer(inventory, false, finalType, false);
 +        return guiBackend.createContainer(context, finalType, size, config.getTitle());
      }
-
+ 
      @Override
 @@ -109,7 +107,7 @@ public class BukkitElementFactory extends ElementFactory {
                  whoClicked,
@@ -693,7 +693,7 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
 +                origin,
                  combined);
      }
-
+ 
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..d4e57da254cdf676539e0ee3ab3862b7e7e27a5f
@@ -762,7 +762,7 @@ index 0000000000000000000000000000000000000000..b7efdbc7bce0e7f68d83abd93aeace52
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..a490dc1acbcb9ec3a7fdaafb36fce1b12d288005
+index 0000000000000000000000000000000000000000..5c413479942dfd5f264279979cb2e84b88d43825
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
 @@ -0,0 +1,63 @@
@@ -829,13 +829,12 @@ index 0000000000000000000000000000000000000000..a490dc1acbcb9ec3a7fdaafb36fce1b1
 +        }
 +    }
 +}
-
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f124a55707c
+index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564772ac33f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,767 @@
+@@ -0,0 +1,861 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -872,6 +871,8 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +import org.bukkit.Bukkit;
 +import org.bukkit.entity.Entity;
 +import org.bukkit.entity.Player;
++import org.bukkit.inventory.ItemStack;
++import org.bukkit.inventory.PlayerInventory;
 +import org.bukkit.plugin.Plugin;
 +import org.jetbrains.annotations.NotNull;
 +
@@ -933,7 +934,8 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +
 +            listener = PacketEvents.getAPI().getEventManager().registerListener(new PacketGuiPacketListener(this));
 +            owner.getLogger()
-+                    .info("[IF] GUI backend: Packet mode enabled. Inventory GUIs are rendered with fake packet items.");
++                    .info("[IF] GUI backend: Packet mode enabled. Inventory GUIs are rendered with fake packet items. "
++                            + "This is the recommended mode for preventing GUI item duplication.");
 +        } catch (final RuntimeException exception) {
 +            available = false;
 +            owner.getLogger().log(Level.WARNING, "Failed to register packet GUI backend. Falling back to Bukkit.", exception);
@@ -1068,12 +1070,13 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            return;
 +        }
 +
-+        if (!click.isSafeTopClick(session.container().getSize())) {
++        final PacketGuiRepairScope repairScope = click.repairScope(session.container().getSize());
++        if (repairScope.fullWindow()) {
 +            requestRender(session, false, true);
 +            return;
 +        }
 +
-+        runOnPlayer(session.player(), () -> handleSafeTopClick(session, click));
++        runOnPlayer(session.player(), () -> handleSafeTopClick(session, click, repairScope));
 +    }
 +
 +    void handleWindowClose(User user, int windowId) {
@@ -1276,7 +1279,8 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +        inventoryFor(user.getUUID()).applyCursor(item);
 +    }
 +
-+    private void handleSafeTopClick(PacketGuiSession session, PacketGuiClick click) {
++    private void handleSafeTopClick(
++            PacketGuiSession session, PacketGuiClick click, PacketGuiRepairScope repairScope) {
 +        if (!isTracked(session)) {
 +            return;
 +        }
@@ -1319,47 +1323,61 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            return;
 +        }
 +
-+        if (click.isOffhandSwapClick()) {
-+            repairOffhandSlot(session);
-+        }
-+        requestRender(session, false, click.needsHardRepair());
-+    }
-+
-+    private void repairOffhandSlot(PacketGuiSession session) {
-+        if (!isTracked(session) || session.closeRequested()) {
-+            return;
-+        }
-+
-+        final com.github.retrooper.packetevents.protocol.item.ItemStack offhandItem =
-+                PacketItemConverter.toPacket(session.player().getInventory().getItemInOffHand());
-+        session.viewerInventory().applySlot(PacketInventoryConstants.SLOT_OFFHAND, offhandItem);
-+        session.user()
-+                .sendPacket(new WrapperPlayServerSetSlot(
-+                        PacketInventoryConstants.PLAYER_WINDOW_ID,
-+                        session.nextStateId(),
-+                        PacketInventoryConstants.SLOT_OFFHAND,
-+                        offhandItem));
-+        sendCursor(session);
++        requestRender(session, false, false, repairScope, click);
 +    }
 +
 +    private void requestRender(PacketGuiSession session, boolean forceReopen, boolean hardResync) {
++        requestRender(session, forceReopen, hardResync, PacketGuiRepairScope.NONE, null);
++    }
++
++    private void requestRender(
++            PacketGuiSession session,
++            boolean forceReopen,
++            boolean hardResync,
++            PacketGuiRepairScope repairScope,
++            PacketGuiClick click) {
 +        if (!isTracked(session) || session.closeRequested()) {
 +            return;
 +        }
 +
-+        if (!session.scheduleRender(forceReopen, hardResync)) {
++        if (!session.scheduleRender(forceReopen, hardResync, repairScope, click)) {
 +            return;
 +        }
 +
 +        runOnPlayerNextTick(session.player(), () -> {
 +            final PacketGuiSession.RenderRequest request = session.consumeRenderRequest();
-+            renderSession(session, request.forceReopen(), request.hardResync());
++            renderSession(session, request);
 +        });
 +    }
 +
 +    private void renderSession(PacketGuiSession session, boolean forceReopen, boolean hardResync) {
++        renderSession(session, forceReopen, hardResync, new boolean[0], new int[0]);
++    }
++
++    private void renderSession(PacketGuiSession session, PacketGuiSession.RenderRequest request) {
++        renderSession(
++                session,
++                request.forceReopen(),
++                request.hardResync(),
++                request.forcedTopSlotRepairs(),
++                request.playerSlotRepairs());
++    }
++
++    private void renderSession(
++            PacketGuiSession session,
++            boolean forceReopen,
++            boolean hardResync,
++            boolean[] forcedTopSlotRepairs,
++            int[] playerSlotRepairs) {
 +        if (!isOnPlayerThread(session.player())) {
-+            runOnPlayer(session.player(), () -> renderSession(session, forceReopen, hardResync));
++            runOnPlayer(
++                    session.player(),
++                    () -> renderSession(
++                            session,
++                            forceReopen,
++                            hardResync,
++                            forcedTopSlotRepairs,
++                            playerSlotRepairs));
 +            return;
 +        }
 +
@@ -1385,7 +1403,8 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            if (sendFullWindow) {
 +                sendWindowItems(session, render);
 +            } else {
-+                sendChangedTopSlots(session, previous, render);
++                sendChangedTopSlots(session, previous, render, forcedTopSlotRepairs);
++                sendPlayerSlotRepairs(session, render, playerSlotRepairs);
 +            }
 +
 +            sendCursor(session);
@@ -1425,10 +1444,15 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +                        session.viewerInventory().cursor()));
 +    }
 +
-+    private void sendChangedTopSlots(PacketGuiSession session, PacketGuiRender previous, PacketGuiRender render) {
++    private void sendChangedTopSlots(
++            PacketGuiSession session,
++            PacketGuiRender previous,
++            PacketGuiRender render,
++            boolean[] forcedTopSlotRepairs) {
 +        int stateId = -1;
 +        for (int slot = 0; slot < render.size(); slot++) {
-+            if (render.sameTopItem(previous, slot)) {
++            final boolean forcedRepair = slot < forcedTopSlotRepairs.length && forcedTopSlotRepairs[slot];
++            if (!forcedRepair && render.sameTopItem(previous, slot)) {
 +                continue;
 +            }
 +
@@ -1442,6 +1466,75 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +                            stateId,
 +                            slot,
 +                            session.packetItem(render, slot)));
++        }
++    }
++
++    private void sendPlayerSlotRepairs(PacketGuiSession session, PacketGuiRender render, int[] playerSlotRepairs) {
++        if (playerSlotRepairs.length == 0) {
++            return;
++        }
++
++        int stateId = -1;
++        for (final int playerSlot : playerSlotRepairs) {
++            final com.github.retrooper.packetevents.protocol.item.ItemStack item =
++                    snapshotPlayerInventorySlot(session, playerSlot);
++            final int openGuiSlot = mapPlayerWindowSlotToOpenGuiSlot(render.size(), playerSlot);
++            if (openGuiSlot >= 0) {
++                if (stateId < 0) {
++                    stateId = session.nextStateId();
++                }
++
++                session.user()
++                        .sendPacket(new WrapperPlayServerSetSlot(
++                                session.windowId(),
++                                stateId,
++                                openGuiSlot,
++                                item));
++                continue;
++            }
++
++            session.user()
++                    .sendPacket(new WrapperPlayServerSetSlot(
++                            PacketInventoryConstants.PLAYER_WINDOW_ID,
++                            session.nextStateId(),
++                            playerSlot,
++                            item));
++        }
++    }
++
++    private com.github.retrooper.packetevents.protocol.item.ItemStack snapshotPlayerInventorySlot(
++            PacketGuiSession session, int playerWindowSlot) {
++        final com.github.retrooper.packetevents.protocol.item.ItemStack item =
++                PacketItemConverter.toPacket(playerInventoryItem(session.player(), playerWindowSlot));
++        session.viewerInventory().applySlot(playerWindowSlot, item);
++        return item;
++    }
++
++    private static ItemStack playerInventoryItem(Player player, int playerWindowSlot) {
++        final PlayerInventory inventory = player.getInventory();
++        if (playerWindowSlot >= PacketInventoryConstants.ITEMS_START
++                && playerWindowSlot < PacketInventoryConstants.HOTBAR_START) {
++            return inventory.getItem(playerWindowSlot);
++        }
++
++        if (playerWindowSlot >= PacketInventoryConstants.HOTBAR_START
++                && playerWindowSlot < PacketInventoryConstants.HOTBAR_START + 9) {
++            return inventory.getItem(playerWindowSlot - PacketInventoryConstants.HOTBAR_START);
++        }
++
++        switch (playerWindowSlot) {
++            case PacketInventoryConstants.SLOT_HELMET:
++                return inventory.getHelmet();
++            case PacketInventoryConstants.SLOT_CHESTPLATE:
++                return inventory.getChestplate();
++            case PacketInventoryConstants.SLOT_LEGGINGS:
++                return inventory.getLeggings();
++            case PacketInventoryConstants.SLOT_BOOTS:
++                return inventory.getBoots();
++            case PacketInventoryConstants.SLOT_OFFHAND:
++                return inventory.getItemInOffHand();
++            default:
++                return null;
 +        }
 +    }
 +
@@ -1584,49 +1677,58 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +    }
 +
 +    private boolean isOnPlayerThread(Player player) {
-+        if (isOwnedByCurrentRegion(player)) {
-+            return true;
++        final Boolean ownedByCurrentRegion = isOwnedByCurrentRegion(player);
++        if (ownedByCurrentRegion != null) {
++            return ownedByCurrentRegion;
 +        }
 +
 +        return Bukkit.isPrimaryThread();
 +    }
 +
-+    private boolean isOwnedByCurrentRegion(Player player) {
++    private Boolean isOwnedByCurrentRegion(Player player) {
 +        try {
 +            final Method method = Bukkit.class.getMethod("isOwnedByCurrentRegion", Entity.class);
 +            return Boolean.TRUE.equals(method.invoke(null, player));
 +        } catch (final NoSuchMethodException ignored) {
-+            return false;
++            return null;
 +        } catch (final ReflectiveOperationException ignored) {
-+            return false;
++            return Boolean.FALSE;
 +        }
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1a321b609
+index 0000000000000000000000000000000000000000..bc0bf258f523442060af97569fe76518dd51364e
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,188 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
++import java.util.Map;
 +
 +final class PacketGuiClick {
 +
 +    private static final int OFFHAND_SWAP_BUTTON = 40;
++    private static final int[] EMPTY_CHANGED_SLOTS = new int[0];
 +
 +    private final int windowId;
 +    private final int slot;
 +    private final int button;
 +    private final WrapperPlayClientClickWindow.WindowClickType clickType;
++    private final int[] changedSlots;
 +
 +    private PacketGuiClick(
-+            int windowId, int slot, int button, WrapperPlayClientClickWindow.WindowClickType clickType) {
++            int windowId,
++            int slot,
++            int button,
++            WrapperPlayClientClickWindow.WindowClickType clickType,
++            int[] changedSlots) {
 +        this.windowId = windowId;
 +        this.slot = slot;
 +        this.button = button;
 +        this.clickType = clickType;
++        this.changedSlots = changedSlots;
 +    }
 +
 +    static PacketGuiClick from(WrapperPlayClientClickWindow packet) {
@@ -1634,7 +1736,8 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +                packet.getWindowId(),
 +                packet.getSlot(),
 +                packet.getButton(),
-+                packet.getWindowClickType());
++                packet.getWindowClickType(),
++                changedSlots(packet));
 +    }
 +
 +    int windowId() {
@@ -1649,6 +1752,10 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +        return button;
 +    }
 +
++    int[] changedSlots() {
++        return changedSlots;
++    }
++
 +    boolean isSafeTopClick(int topSize) {
 +        if (slot < 0 || slot >= topSize) {
 +            return false;
@@ -1657,8 +1764,26 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +        return isPickupClick() || isQuickMoveClick() || isSwapClick() || isCloneClick();
 +    }
 +
-+    boolean needsHardRepair() {
-+        return isPickupClick() || isQuickMoveClick() || isSwapClick() || isCloneClick();
++    PacketGuiRepairScope repairScope(int topSize) {
++        if (!isSafeTopClick(topSize)) {
++            return PacketGuiRepairScope.FULL_WINDOW;
++        }
++
++        if (isPickupClick() || isCloneClick()) {
++            return PacketGuiRepairScope.TOP_SLOT_AND_CURSOR;
++        }
++
++        if (isQuickMoveClick()) {
++            return PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_PLAYER_SLOT;
++        }
++
++        if (isSwapClick()) {
++            return isOffhandSwapClick()
++                    ? PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_OFFHAND
++                    : PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_PLAYER_SLOT;
++        }
++
++        return PacketGuiRepairScope.FULL_WINDOW;
 +    }
 +
 +    boolean isLeftClick() {
@@ -1685,6 +1810,18 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +        return isSwapClick() && button == OFFHAND_SWAP_BUTTON;
 +    }
 +
++    int swappedPlayerWindowSlot() {
++        if (!isSwapClick()) {
++            return -1;
++        }
++
++        if (button == OFFHAND_SWAP_BUTTON) {
++            return PacketInventoryConstants.SLOT_OFFHAND;
++        }
++
++        return PacketInventoryConstants.HOTBAR_START + button;
++    }
++
 +    String clickIdentifier() {
 +        if (isPickupClick()) {
 +            if (button == 0) return "LEFT";
@@ -1704,7 +1841,7 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +            return "MIDDLE";
 +        }
 +
-+        return clickType.name();
++        return clickType == null ? "UNKNOWN" : clickType.name();
 +    }
 +
 +    private boolean isPickupClick() {
@@ -1722,6 +1859,25 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +
 +    private boolean isCloneClick() {
 +        return clickType == WrapperPlayClientClickWindow.WindowClickType.CLONE;
++    }
++
++    @SuppressWarnings("deprecation")
++    private static int[] changedSlots(WrapperPlayClientClickWindow packet) {
++        Map<Integer, ?> slots = packet.getHashedSlots();
++        if (slots == null) {
++            slots = packet.getSlots().orElse(null);
++        }
++
++        if (slots == null || slots.isEmpty()) {
++            return EMPTY_CHANGED_SLOTS;
++        }
++
++        final int[] changedSlots = new int[slots.size()];
++        int index = 0;
++        for (final Integer changedSlot : slots.keySet()) {
++            changedSlots[index++] = changedSlot == null ? -1 : changedSlot;
++        }
++        return changedSlots;
 +    }
 +
 +    @Override
@@ -1864,13 +2020,12 @@ index 0000000000000000000000000000000000000000..89cf420ff84c58826d06cbe9d92c4f9b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..1e4d3441f44b118c75ab62bf24e846c68a30d955
+index 0000000000000000000000000000000000000000..be445839c0fedf34bea198e2b3aa3d8a6780a7c9
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,85 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
-+import java.util.Arrays;
 +import java.util.Objects;
 +import net.kyori.adventure.text.Component;
 +import org.bukkit.inventory.ItemStack;
@@ -1942,23 +2097,6 @@ index 0000000000000000000000000000000000000000..1e4d3441f44b118c75ab62bf24e846c6
 +                && PacketItemConverter.sameDisplayItem(topItems[slot], other.topItems[slot]);
 +    }
 +
-+    @Override
-+    public boolean equals(Object o) {
-+        if (this == o) return true;
-+        if (!(o instanceof PacketGuiRender)) return false;
-+        final PacketGuiRender that = (PacketGuiRender) o;
-+        return rows == that.rows
-+                && Objects.equals(rawTitle, that.rawTitle)
-+                && Arrays.equals(topItems, that.topItems);
-+    }
-+
-+    @Override
-+    public int hashCode() {
-+        int result = Objects.hash(rawTitle, rows);
-+        result = 31 * result + Arrays.hashCode(topItems);
-+        return result;
-+    }
-+
 +    private static Component titleComponent(Object title) {
 +        if (title instanceof Component) {
 +            return (Component) title;
@@ -1971,18 +2109,53 @@ index 0000000000000000000000000000000000000000..1e4d3441f44b118c75ab62bf24e846c6
 +        return Component.text(String.valueOf(title));
 +    }
 +}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRepairScope.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRepairScope.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..838bd2a2606696d3dafc5430b179410bfd13df7d
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRepairScope.java
+@@ -0,0 +1,27 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++enum PacketGuiRepairScope {
++    NONE,
++    TOP_SLOT_AND_CURSOR,
++    TOP_SLOT_CURSOR_AND_PLAYER_SLOT,
++    TOP_SLOT_CURSOR_AND_OFFHAND,
++    FULL_WINDOW;
++
++    boolean fullWindow() {
++        return this == FULL_WINDOW;
++    }
++
++    boolean repairsTopSlot() {
++        return this == TOP_SLOT_AND_CURSOR
++                || this == TOP_SLOT_CURSOR_AND_PLAYER_SLOT
++                || this == TOP_SLOT_CURSOR_AND_OFFHAND;
++    }
++
++    boolean repairsChangedPlayerSlots() {
++        return this == TOP_SLOT_CURSOR_AND_PLAYER_SLOT || this == TOP_SLOT_CURSOR_AND_OFFHAND;
++    }
++
++    boolean repairsOffhand() {
++        return this == TOP_SLOT_CURSOR_AND_OFFHAND;
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..8994528f01d429b9959282dbed029caabb2a02a4
+index 0000000000000000000000000000000000000000..9c49c2dfe15932b8c35caa86e5c64f5910072ec3
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,309 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
++import java.util.Arrays;
 +import java.util.UUID;
 +import me.devnatan.inventoryframework.BukkitViewer;
 +import me.devnatan.inventoryframework.context.IFRenderContext;
++import org.bukkit.Material;
 +import org.bukkit.entity.Player;
 +import org.bukkit.inventory.ItemStack;
 +
@@ -2001,6 +2174,9 @@ index 0000000000000000000000000000000000000000..8994528f01d429b9959282dbed029caa
 +    private boolean renderScheduled;
 +    private boolean scheduledForceReopen;
 +    private boolean scheduledHardResync;
++    private boolean[] scheduledTopSlotRepairs = new boolean[0];
++    private final boolean[] scheduledPlayerSlotRepairs = new boolean[PacketInventoryConstants.INVENTORY_SIZE];
++    private int scheduledPlayerSlotRepairCount;
 +    private boolean closed;
 +    private boolean closeRequested;
 +    private int stateId = 1;
@@ -2088,9 +2264,19 @@ index 0000000000000000000000000000000000000000..8994528f01d429b9959282dbed029caa
 +        return stateId++;
 +    }
 +
-+    synchronized boolean scheduleRender(boolean forceReopen, boolean hardResync) {
++    synchronized boolean scheduleRender(
++            boolean forceReopen,
++            boolean hardResync,
++            PacketGuiRepairScope repairScope,
++            PacketGuiClick click) {
++        final PacketGuiRepairScope scope = repairScope == null ? PacketGuiRepairScope.NONE : repairScope;
 +        scheduledForceReopen |= forceReopen;
-+        scheduledHardResync |= hardResync;
++        scheduledHardResync |= hardResync || scope.fullWindow();
++
++        if (!scheduledHardResync && click != null) {
++            scheduleTargetedRepairs(scope, click);
++        }
++
 +        if (renderScheduled) {
 +            return false;
 +        }
@@ -2100,10 +2286,17 @@ index 0000000000000000000000000000000000000000..8994528f01d429b9959282dbed029caa
 +    }
 +
 +    synchronized RenderRequest consumeRenderRequest() {
-+        final RenderRequest request = new RenderRequest(scheduledForceReopen, scheduledHardResync);
++        final RenderRequest request = new RenderRequest(
++                scheduledForceReopen,
++                scheduledHardResync,
++                scheduledTopSlotRepairs.length == 0 ? new boolean[0] : scheduledTopSlotRepairs.clone(),
++                scheduledPlayerSlotRepairs());
 +        renderScheduled = false;
 +        scheduledForceReopen = false;
 +        scheduledHardResync = false;
++        scheduledTopSlotRepairs = new boolean[0];
++        Arrays.fill(scheduledPlayerSlotRepairs, false);
++        scheduledPlayerSlotRepairCount = 0;
 +        return request;
 +    }
 +
@@ -2111,15 +2304,14 @@ index 0000000000000000000000000000000000000000..8994528f01d429b9959282dbed029caa
 +        ensureTopItemCache(render.size());
 +
 +        final ItemStack item = render.rawBukkitItem(slot);
-+        final int fingerprint = PacketItemConverter.displayFingerprint(item);
 +        final CachedPacketItem cached = topItemCache[slot];
-+        if (cached != null && cached.matches(item, fingerprint)) {
++        if (cached != null && cached.matches(item)) {
 +            return PacketItemConverter.copy(cached.packetItem);
 +        }
 +
 +        final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem =
 +                PacketItemConverter.toPacket(item);
-+        topItemCache[slot] = new CachedPacketItem(item, fingerprint, packetItem);
++        topItemCache[slot] = new CachedPacketItem(item, packetItem);
 +        return PacketItemConverter.copy(packetItem);
 +    }
 +
@@ -2133,14 +2325,83 @@ index 0000000000000000000000000000000000000000..8994528f01d429b9959282dbed029caa
 +        }
 +    }
 +
++    private void scheduleTargetedRepairs(PacketGuiRepairScope scope, PacketGuiClick click) {
++        if (scope.repairsTopSlot()) {
++            scheduleTopSlotRepair(click.slot());
++        }
++
++        if (scope.repairsChangedPlayerSlots()) {
++            scheduleChangedPlayerSlotRepairs(click);
++        }
++
++        if (scope.repairsOffhand()) {
++            schedulePlayerSlotRepair(PacketInventoryConstants.SLOT_OFFHAND);
++        }
++    }
++
++    private void scheduleTopSlotRepair(int slot) {
++        if (slot < 0 || slot >= container.getSize()) {
++            return;
++        }
++
++        if (scheduledTopSlotRepairs.length != container.getSize()) {
++            scheduledTopSlotRepairs = new boolean[container.getSize()];
++        }
++        scheduledTopSlotRepairs[slot] = true;
++    }
++
++    private void scheduleChangedPlayerSlotRepairs(PacketGuiClick click) {
++        final int topSize = container.getSize();
++        for (final int changedSlot : click.changedSlots()) {
++            final int playerSlot = PacketViewerInventory.mapGuiContainerSlotToPlayerSlot(topSize, changedSlot);
++            schedulePlayerSlotRepair(playerSlot);
++        }
++
++        schedulePlayerSlotRepair(click.swappedPlayerWindowSlot());
++    }
++
++    private void schedulePlayerSlotRepair(int playerSlot) {
++        if (playerSlot < 0 || playerSlot >= PacketInventoryConstants.INVENTORY_SIZE) {
++            return;
++        }
++
++        if (!scheduledPlayerSlotRepairs[playerSlot]) {
++            scheduledPlayerSlotRepairs[playerSlot] = true;
++            scheduledPlayerSlotRepairCount++;
++        }
++    }
++
++    private int[] scheduledPlayerSlotRepairs() {
++        if (scheduledPlayerSlotRepairCount == 0) {
++            return new int[0];
++        }
++
++        final int[] repairs = new int[scheduledPlayerSlotRepairCount];
++        int index = 0;
++        for (int slot = 0; slot < scheduledPlayerSlotRepairs.length; slot++) {
++            if (scheduledPlayerSlotRepairs[slot]) {
++                repairs[index++] = slot;
++            }
++        }
++        return repairs;
++    }
++
 +    static final class RenderRequest {
 +
 +        private final boolean forceReopen;
 +        private final boolean hardResync;
++        private final boolean[] forcedTopSlotRepairs;
++        private final int[] playerSlotRepairs;
 +
-+        private RenderRequest(boolean forceReopen, boolean hardResync) {
++        private RenderRequest(
++                boolean forceReopen,
++                boolean hardResync,
++                boolean[] forcedTopSlotRepairs,
++                int[] playerSlotRepairs) {
 +            this.forceReopen = forceReopen;
 +            this.hardResync = hardResync;
++            this.forcedTopSlotRepairs = forcedTopSlotRepairs;
++            this.playerSlotRepairs = playerSlotRepairs;
 +        }
 +
 +        boolean forceReopen() {
@@ -2150,25 +2411,49 @@ index 0000000000000000000000000000000000000000..8994528f01d429b9959282dbed029caa
 +        boolean hardResync() {
 +            return hardResync;
 +        }
++
++        boolean[] forcedTopSlotRepairs() {
++            return forcedTopSlotRepairs;
++        }
++
++        int[] playerSlotRepairs() {
++            return playerSlotRepairs;
++        }
 +    }
 +
 +    private static final class CachedPacketItem {
 +
++        private final ItemStack sourceReference;
 +        private final ItemStack bukkitItem;
-+        private final int fingerprint;
++        private final Material type;
++        private final int amount;
 +        private final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem;
 +
 +        private CachedPacketItem(
-+                ItemStack bukkitItem,
-+                int fingerprint,
-+                com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
++                ItemStack bukkitItem, com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
++            this.sourceReference = bukkitItem;
 +            this.bukkitItem = bukkitItem == null ? null : bukkitItem.clone();
-+            this.fingerprint = fingerprint;
++            this.type = PacketItemConverter.isEmpty(bukkitItem) ? Material.AIR : bukkitItem.getType();
++            this.amount = PacketItemConverter.isEmpty(bukkitItem) ? 0 : bukkitItem.getAmount();
 +            this.packetItem = PacketItemConverter.copy(packetItem);
 +        }
 +
-+        private boolean matches(ItemStack item, int fingerprint) {
-+            return this.fingerprint == fingerprint && PacketItemConverter.sameDisplayItem(bukkitItem, item);
++        private boolean matches(ItemStack item) {
++            if (item == sourceReference) {
++                return true;
++            }
++
++            if (PacketItemConverter.isEmpty(item) && PacketItemConverter.isEmpty(bukkitItem)) {
++                return true;
++            }
++
++            if (PacketItemConverter.isEmpty(item) || PacketItemConverter.isEmpty(bukkitItem)) {
++                return false;
++            }
++
++            return item.getType() == type
++                    && item.getAmount() == amount
++                    && PacketItemConverter.sameDisplayItem(bukkitItem, item);
 +        }
 +    }
 +}
@@ -2219,10 +2504,10 @@ index 0000000000000000000000000000000000000000..aa6ab4aba33324a21bab6f7707532550
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..03db18d4012fb02b485f06b365778835861a43e4
+index 0000000000000000000000000000000000000000..246044d56eab871e7aad763ec95d1aa40a3fc6f6
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,220 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import io.github.retrooper.packetevents.util.SpigotConversionUtil;
@@ -2272,6 +2557,10 @@ index 0000000000000000000000000000000000000000..03db18d4012fb02b485f06b365778835
 +    }
 +
 +    static boolean sameDisplayItem(ItemStack first, ItemStack second) {
++        if (first == second) {
++            return true;
++        }
++
 +        if (isEmpty(first) && isEmpty(second)) {
 +            return true;
 +        }
@@ -2280,11 +2569,11 @@ index 0000000000000000000000000000000000000000..03db18d4012fb02b485f06b365778835
 +            return false;
 +        }
 +
-+        return first.equals(second);
-+    }
++        if (first.getType() != second.getType() || first.getAmount() != second.getAmount()) {
++            return false;
++        }
 +
-+    static int displayFingerprint(ItemStack item) {
-+        return isEmpty(item) ? 0 : item.hashCode();
++        return first.equals(second);
 +    }
 +
 +    static boolean isEmpty(ItemStack item) {
@@ -2441,10 +2730,10 @@ index 0000000000000000000000000000000000000000..03db18d4012fb02b485f06b365778835
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c67b05644fd4a7e5063780d6f2cbcaef65fb29ca
+index 0000000000000000000000000000000000000000..2a79e2d90b75a04436eda3c54780c226886d2501
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,245 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.Map;
@@ -2497,11 +2786,8 @@ index 0000000000000000000000000000000000000000..c67b05644fd4a7e5063780d6f2cbcaef
 +
 +    ItemStack[] snapshotItems() {
 +        synchronized (topItems) {
-+            final ItemStack[] snapshot = new ItemStack[topItems.length];
-+            for (int slot = 0; slot < topItems.length; slot++) {
-+                snapshot[slot] = topItems[slot] == null ? null : topItems[slot].clone();
-+            }
-+            return snapshot;
++            // Items are cloned on write; preserving references lets the packet cache skip unchanged slots.
++            return topItems.clone();
 +        }
 +    }
 +
@@ -2553,10 +2839,10 @@ index 0000000000000000000000000000000000000000..c67b05644fd4a7e5063780d6f2cbcaef
 +                throw new IndexOutOfBoundsException(
 +                        "Slot out of bounds: " + slot + " (size=" + topItems.length + ")");
 +            }
-+            final ItemStack nextItem = item == null ? null : ((ItemStack) item).clone();
++            final ItemStack nextItem = (ItemStack) item;
 +            changed = !PacketItemConverter.sameDisplayItem(topItems[slot], nextItem);
 +            if (changed) {
-+                topItems[slot] = nextItem;
++                topItems[slot] = nextItem == null ? null : nextItem.clone();
 +            }
 +        }
 +        if (changed) {
@@ -2867,19 +3153,19 @@ index ec3bd553181923362bece51aff5fec6983a8a52f..b5888370d5c9703c7487d4312df7e9c9
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
 @@ -4,7 +4,6 @@ import static me.devnatan.inventoryframework.ViewConfig.CANCEL_ON_CLICK;
-
+ 
  import me.devnatan.inventoryframework.VirtualView;
  import me.devnatan.inventoryframework.context.SlotClickContext;
 -import org.bukkit.event.inventory.InventoryClickEvent;
  import org.jetbrains.annotations.NotNull;
-
+ 
  /**
 @@ -18,10 +17,9 @@ public final class GlobalClickInterceptor implements PipelineInterceptor<Virtual
          if (!(subject instanceof SlotClickContext)) return;
-
+ 
          final SlotClickContext context = (SlotClickContext) subject;
 -        final InventoryClickEvent event = context.getClickOrigin();
-
+ 
          // inherit cancellation so we can un-cancel it
 -        context.setCancelled(event.isCancelled() || context.getConfig().isOptionSet(CANCEL_ON_CLICK, true));
 +        context.setCancelled(context.isCancelled() || context.getConfig().isOptionSet(CANCEL_ON_CLICK, true));
@@ -2897,16 +3183,16 @@ index db6b8c48c4c406e78aa84d3af4a15d0421ff53b0..4047e6e71b9e3086810236355f64e735
 -import org.bukkit.event.inventory.InventoryClickEvent;
 -import org.bukkit.event.inventory.InventoryType;
  import org.jetbrains.annotations.NotNull;
-
+ 
  /**
 @@ -18,8 +16,7 @@ public final class ItemClickInterceptor implements PipelineInterceptor<VirtualVi
          if (!(subject instanceof SlotClickContext)) return;
-
+ 
          final SlotClickContext context = (SlotClickContext) subject;
 -        final InventoryClickEvent event = context.getClickOrigin();
 -        if (event.getSlotType() == InventoryType.SlotType.OUTSIDE) return;
 +        if (context.isOutsideClick()) return;
-
+ 
          final Component component = context.getComponent();
          if (component == null) return;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java
@@ -2920,16 +3206,16 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
 -import org.bukkit.event.inventory.InventoryClickEvent;
 -import org.bukkit.event.inventory.InventoryType;
  import org.jetbrains.annotations.NotNull;
-
+ 
  /**
 @@ -19,8 +17,7 @@ public final class ItemCloseOnClickInterceptor implements PipelineInterceptor<Vi
          if (!(subject instanceof SlotClickContext)) return;
-
+ 
          final SlotClickContext context = (SlotClickContext) subject;
 -        final InventoryClickEvent event = context.getClickOrigin();
 -        if (event.getSlotType() == InventoryType.SlotType.OUTSIDE) return;
 +        if (context.isOutsideClick()) return;
-
+ 
          final Component component = context.getComponent();
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
 diff --git a/settings.gradle.kts b/settings.gradle.kts
@@ -2944,4 +3230,4 @@ index 05585a2bd587532365bfe98563ecc18047386144..f26ceb55f94d93d4eaf30706bf82998b
 +        maven("https://repo.codemc.io/repository/maven-snapshots/")
      }
  }
-
+ 
