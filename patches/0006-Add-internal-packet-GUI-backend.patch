@@ -813,7 +813,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f124a55707c
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,653 @@
+@@ -0,0 +1,660 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -917,7 +917,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +    @Override
 +    public void unregister() {
 +        for (final PacketGuiSession session : List.copyOf(sessions.values())) {
-+            closeSession(session, false, CLOSE_ORIGIN_SHUTDOWN, false);
++            closeSession(session, false, CLOSE_ORIGIN_SHUTDOWN, false, false);
 +        }
 +        sessions.clear();
 +        viewerInventories.clear();
@@ -940,7 +940,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +        final PacketGuiSession session = sessions.get(player.getUniqueId());
 +        if (session == null) return false;
 +
-+        closeSession(session, false, CLOSE_ORIGIN_QUIT, true);
++        closeSession(session, false, CLOSE_ORIGIN_QUIT, true, true);
 +        viewerInventories.remove(player.getUniqueId());
 +        return true;
 +    }
@@ -950,7 +950,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +        final PacketGuiSession session = sessions.get(player.getUniqueId());
 +        if (session == null) return false;
 +
-+        closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true);
++        closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true);
 +        return true;
 +    }
 +
@@ -976,7 +976,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +
 +        final PacketGuiSession previous = sessions.get(player.getUniqueId());
 +        if (previous != null) {
-+            closeSession(previous, false, CLOSE_ORIGIN_SERVER, true);
++            closeSession(previous, false, CLOSE_ORIGIN_SERVER, true, true);
 +        }
 +
 +        final PacketViewerInventory viewerInventory = inventoryFor(player.getUniqueId());
@@ -990,7 +990,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +    void close(@NotNull PacketViewContainer container, boolean sendClosePacket) {
 +        for (final PacketGuiSession session : List.copyOf(sessions.values())) {
 +            if (session.container() == container) {
-+                closeSession(session, sendClosePacket, CLOSE_ORIGIN_SERVER, true);
++                closeSession(session, sendClosePacket, CLOSE_ORIGIN_SERVER, true, true);
 +            }
 +        }
 +    }
@@ -1001,7 +1001,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            return;
 +        }
 +
-+        closeSession(session, sendClosePacket, CLOSE_ORIGIN_SERVER, true);
++        closeSession(session, sendClosePacket, CLOSE_ORIGIN_SERVER, true, true);
 +    }
 +
 +    void requestResync(@NotNull PacketViewContainer container) {
@@ -1060,7 +1060,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            return;
 +        }
 +        session.viewerInventory().closeWindow(windowId);
-+        runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true));
++        runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true, true));
 +    }
 +
 +    void handleExternalInventoryOpen(User user, int windowId, int topSize) {
@@ -1074,7 +1074,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +
 +        final PacketGuiSession session = sessions.get(user.getUUID());
 +        if (session != null && !isGuiWindow(user, windowId)) {
-+            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true));
++            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true));
 +        }
 +    }
 +
@@ -1085,9 +1085,15 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +
 +        final PacketGuiSession session = sessions.get(user.getUUID());
 +        if (isTracked(session)) {
++            session.closeRequested(true);
 +            runOnPlayer(
 +                    session.player(),
-+                    () -> closeSession(session, windowId != session.windowId(), CLOSE_ORIGIN_SERVER, true));
++                    () -> closeSession(
++                            session,
++                            false,
++                            CLOSE_ORIGIN_SERVER,
++                            true,
++                            false));
 +            return;
 +        }
 +
@@ -1101,7 +1107,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +
 +        final PacketGuiSession session = sessions.get(viewerId);
 +        if (session != null) {
-+            closeSession(session, false, CLOSE_ORIGIN_QUIT, false);
++            closeSession(session, false, CLOSE_ORIGIN_QUIT, false, false);
 +        }
 +        viewerInventories.remove(viewerId);
 +    }
@@ -1201,7 +1207,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            context.getRoot().getPipeline().execute(StandardPipelinePhases.CLICK, clickContext);
 +        } catch (final RuntimeException exception) {
 +            owner.getLogger().log(Level.SEVERE, "An error occurred while processing a packet GUI click", exception);
-+            closeSession(session, true, CLOSE_ORIGIN_SERVER, true);
++            closeSession(session, true, CLOSE_ORIGIN_SERVER, true, true);
 +            return;
 +        }
 +
@@ -1258,7 +1264,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            session.appliedRender(render);
 +        } catch (final RuntimeException exception) {
 +            owner.getLogger().log(Level.WARNING, "Failed to send packet GUI render", exception);
-+            closeSession(session, false, CLOSE_ORIGIN_SERVER, true);
++            closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
 +        }
 +    }
 +
@@ -1315,13 +1321,14 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +        session.user().sendPacket(new WrapperPlayServerSetCursorItem(session.viewerInventory().cursor()));
 +    }
 +
-+    private boolean closeSession(PacketGuiSession session, boolean sendClosePacket, Object origin, boolean callClose) {
++    private boolean closeSession(
++            PacketGuiSession session, boolean sendClosePacket, Object origin, boolean callClose, boolean syncInventory) {
 +        if (session == null) {
 +            return false;
 +        }
 +
 +        if (!isOnPlayerThread(session.player()) && (sendClosePacket || callClose)) {
-+            runOnPlayer(session.player(), () -> closeSession(session, sendClosePacket, origin, callClose));
++            runOnPlayer(session.player(), () -> closeSession(session, sendClosePacket, origin, callClose, syncInventory));
 +            return true;
 +        }
 +
@@ -1345,7 +1352,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            }
 +        }
 +
-+        if (sendClosePacket || callClose) {
++        if (syncInventory) {
 +            session.player().updateInventory();
 +        }
 +        if (callClose) {
