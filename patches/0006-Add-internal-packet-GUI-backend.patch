@@ -813,7 +813,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f124a55707c
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,660 @@
+@@ -0,0 +1,742 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1124,6 +1124,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +        final PacketViewerInventory inventory = inventoryFor(user.getUUID());
 +        if (windowId == PacketInventoryConstants.PLAYER_WINDOW_ID) {
 +            inventory.applyPlayerWindowItems(items, carried);
++            mirrorPlayerInventoryWindow(user.getUUID(), inventory);
 +            return;
 +        }
 +
@@ -1136,7 +1137,9 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            return;
 +        }
 +
-+        inventoryFor(user.getUUID()).applySlot(PacketInventoryConstants.playerInventorySlotToContainerSlot(slot), item);
++        final int mappedSlot = PacketInventoryConstants.playerInventorySlotToContainerSlot(slot);
++        inventoryFor(user.getUUID()).applySlot(mappedSlot, item);
++        mirrorPlayerInventorySlot(user.getUUID(), mappedSlot, item);
 +    }
 +
 +    void trackWindowSlot(
@@ -1148,6 +1151,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +        final PacketViewerInventory inventory = inventoryFor(user.getUUID());
 +        if (windowId == PacketInventoryConstants.PLAYER_WINDOW_ID) {
 +            inventory.applySlot(slot, item);
++            mirrorPlayerInventorySlot(user.getUUID(), slot, item);
 +            return;
 +        }
 +
@@ -1158,6 +1162,84 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +        if (mappedSlot >= 0) {
 +            inventory.applySlot(mappedSlot, item);
 +        }
++    }
++
++    private void mirrorPlayerInventoryWindow(UUID viewerId, PacketViewerInventory inventory) {
++        final PacketGuiSession session = sessions.get(viewerId);
++        if (!isTracked(session) || session.closeRequested()) {
++            return;
++        }
++
++        final List<Integer> guiSlots = new ArrayList<>(36);
++        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items = new ArrayList<>(36);
++        for (int slot = PacketInventoryConstants.ITEMS_START;
++                slot < PacketInventoryConstants.HOTBAR_START + 9;
++                slot++) {
++            final int guiSlot = mapPlayerWindowSlotToOpenGuiSlot(session.container().getSize(), slot);
++            if (guiSlot < 0) {
++                continue;
++            }
++
++            guiSlots.add(guiSlot);
++            items.add(inventory.item(slot));
++        }
++
++        runOnPlayer(session.player(), () -> {
++            if (!isTracked(session) || session.closeRequested()) {
++                return;
++            }
++
++            final int stateId = session.nextStateId();
++            for (int index = 0; index < guiSlots.size(); index++) {
++                session.user()
++                        .sendPacket(new WrapperPlayServerSetSlot(
++                                session.windowId(),
++                                stateId,
++                                guiSlots.get(index),
++                                items.get(index)));
++            }
++        });
++    }
++
++    private void mirrorPlayerInventorySlot(
++            UUID viewerId, int playerWindowSlot, com.github.retrooper.packetevents.protocol.item.ItemStack item) {
++        final PacketGuiSession session = sessions.get(viewerId);
++        if (!isTracked(session) || session.closeRequested()) {
++            return;
++        }
++
++        final int guiSlot = mapPlayerWindowSlotToOpenGuiSlot(session.container().getSize(), playerWindowSlot);
++        if (guiSlot < 0) {
++            return;
++        }
++
++        final com.github.retrooper.packetevents.protocol.item.ItemStack mirrorItem = PacketItemConverter.copy(item);
++        runOnPlayer(session.player(), () -> {
++            if (!isTracked(session) || session.closeRequested()) {
++                return;
++            }
++
++            session.user()
++                    .sendPacket(new WrapperPlayServerSetSlot(
++                            session.windowId(),
++                            session.nextStateId(),
++                            guiSlot,
++                            mirrorItem));
++        });
++    }
++
++    private static int mapPlayerWindowSlotToOpenGuiSlot(int topSize, int playerWindowSlot) {
++        if (playerWindowSlot >= PacketInventoryConstants.ITEMS_START
++                && playerWindowSlot < PacketInventoryConstants.HOTBAR_START) {
++            return topSize + (playerWindowSlot - PacketInventoryConstants.ITEMS_START);
++        }
++
++        if (playerWindowSlot >= PacketInventoryConstants.HOTBAR_START
++                && playerWindowSlot < PacketInventoryConstants.HOTBAR_START + 9) {
++            return topSize + 27 + (playerWindowSlot - PacketInventoryConstants.HOTBAR_START);
++        }
++
++        return -1;
 +    }
 +
 +    void trackCursor(User user, com.github.retrooper.packetevents.protocol.item.ItemStack item) {
@@ -1530,7 +1612,7 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +    }
 +
 +    boolean needsHardRepair() {
-+        return isQuickMoveClick() || isSwapClick() || isCloneClick();
++        return isPickupClick() || isQuickMoveClick() || isSwapClick() || isCloneClick();
 +    }
 +
 +    boolean isLeftClick() {
