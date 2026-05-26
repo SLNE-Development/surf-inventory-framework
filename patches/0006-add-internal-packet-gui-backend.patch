@@ -25,7 +25,7 @@ Subject: [PATCH] Add internal packet GUI backend
  .../internal/packet/PacketGuiRender.java      |  99 ++++
  .../internal/packet/PacketGuiSession.java     | 116 ++++
  .../packet/PacketInventoryConstants.java      |  39 ++
- .../internal/packet/PacketItemConverter.java  |  37 ++
+ .../internal/packet/PacketItemConverter.java  | 151 +++++
  .../internal/packet/PacketViewContainer.java  | 229 ++++++++
  .../packet/PacketViewerInventory.java         | 162 ++++++
  .../pipeline/GlobalClickInterceptor.java      |   4 +-
@@ -1884,12 +1884,18 @@ new file mode 100644
 index 00000000..bccc4cfc
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,151 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import io.github.retrooper.packetevents.util.SpigotConversionUtil;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.TextDecoration;
 +import org.bukkit.Material;
 +import org.bukkit.inventory.ItemStack;
++import org.bukkit.inventory.meta.ItemMeta;
 +
 +final class PacketItemConverter {
 +
@@ -1901,7 +1907,7 @@ index 00000000..bccc4cfc
 +        }
 +
 +        final com.github.retrooper.packetevents.protocol.item.ItemStack converted =
-+                SpigotConversionUtil.fromBukkitItemStack(item);
++                SpigotConversionUtil.fromBukkitItemStack(normalizeItem(item));
 +        return converted == null || converted.isEmpty()
 +                ? com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY
 +                : converted.copy();
@@ -1921,7 +1927,116 @@ index 00000000..bccc4cfc
 +                ? com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY
 +                : item.copy();
 +    }
++
++    private static ItemStack normalizeItem(ItemStack item) {
++        final ItemStack copy = item.clone();
++        final ItemMeta meta = copy.getItemMeta();
++        if (meta == null) {
++            return copy;
++        }
++
++        final boolean changed = normalizeDisplayName(meta) | normalizeLore(meta);
++        if (changed) {
++            copy.setItemMeta(meta);
++        }
++        return copy;
++    }
++
++    private static boolean normalizeDisplayName(ItemMeta meta) {
++        final Component displayName = readAdventureDisplayName(meta);
++        if (displayName == null) {
++            return false;
++        }
++
++        final Component normalized = forceNonItalic(displayName);
++        if (normalized.equals(displayName)) {
++            return false;
++        }
++
++        return invokeItemMetaSetter(meta, "displayName", Component.class, normalized);
++    }
++
++    private static boolean normalizeLore(ItemMeta meta) {
++        final List<Component> lore = readAdventureLore(meta);
++        if (lore == null) {
++            return false;
++        }
++
++        final List<Component> normalizedLore = new ArrayList<>(lore.size());
++        boolean changed = false;
++        for (final Component component : lore) {
++            final Component normalized = forceNonItalic(component);
++            normalizedLore.add(normalized);
++            changed |= !normalized.equals(component);
++        }
++
++        if (!changed) {
++            return false;
++        }
++
++        return invokeItemMetaSetter(meta, "lore", List.class, normalizedLore);
++    }
++
++    private static Component readAdventureDisplayName(ItemMeta meta) {
++        final Object value = invokeItemMetaGetter(meta, "displayName");
++        return value instanceof Component ? (Component) value : null;
++    }
++
++    private static List<Component> readAdventureLore(ItemMeta meta) {
++        final Object value = invokeItemMetaGetter(meta, "lore");
++        if (!(value instanceof List<?>)) {
++            return null;
++        }
++
++        final List<?> rawLore = (List<?>) value;
++        final List<Component> lore = new ArrayList<>(rawLore.size());
++        for (final Object line : rawLore) {
++            if (!(line instanceof Component)) {
++                return null;
++            }
++            lore.add((Component) line);
++        }
++        return lore;
++    }
++
++    private static Object invokeItemMetaGetter(ItemMeta meta, String methodName) {
++        try {
++            final Method method = ItemMeta.class.getMethod(methodName);
++            return method.invoke(meta);
++        } catch (final ReflectiveOperationException ignored) {
++            return null;
++        }
++    }
++
++    private static boolean invokeItemMetaSetter(
++            ItemMeta meta,
++            String methodName,
++            Class<?> parameterType,
++            Object value) {
++        try {
++            final Method method = ItemMeta.class.getMethod(methodName, parameterType);
++            method.invoke(meta, value);
++            return true;
++        } catch (final ReflectiveOperationException ignored) {
++            return false;
++        }
++    }
++
++    private static Component forceNonItalic(Component component) {
++        Component normalized = component.decoration(TextDecoration.ITALIC, TextDecoration.State.FALSE);
++        if (normalized.children().isEmpty()) {
++            return normalized;
++        }
++
++        final List<Component> children = normalized.children();
++        final List<Component> normalizedChildren = new ArrayList<>(children.size());
++        for (final Component child : children) {
++            normalizedChildren.add(forceNonItalic(child));
++        }
++        return normalized.children(normalizedChildren);
++    }
 +}
+
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
 new file mode 100644
 index 00000000..8e578b11
