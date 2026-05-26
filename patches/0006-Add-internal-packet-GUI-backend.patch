@@ -33,6 +33,41 @@ index 89850fa8d67a4ff08fbe5997ab94625e50c0cf19..daec84d3a7722c8390ae6624b01b84d5
 -publish = { id = "com.vanniktech.maven.publish.base", version = "0.34.0" }
 \ No newline at end of file
 +publish = { id = "com.vanniktech.maven.publish.base", version = "0.34.0" }
+diff --git a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/component/PaginationImpl.java b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/component/PaginationImpl.java
+index 382dc753871faedef550b566b507e52fdd040e30..cb1bb0ac10c1c70d7ba60cd35271ff3210c469af 100644
+--- a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/component/PaginationImpl.java
++++ b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/component/PaginationImpl.java
+@@ -282,7 +282,7 @@ public class PaginationImpl extends AbstractStateValue implements Pagination, In
+ 
+                     final Component component = componentFactory.create();
+ 
+-                    debug(() -> "  @ placeholder %d (index %d) = %s", layoutPosition, index, component.toString());
++                    debug(() -> "  @ placeholder %d (index %d) = %s", layoutPosition, index, component);
+                     getInternalComponents().add(component);
+                     index++;
+                     continue;
+@@ -296,7 +296,7 @@ public class PaginationImpl extends AbstractStateValue implements Pagination, In
+                 final ComponentFactory factory = elementFactory.create(this, index, layoutPosition, paginatedValue);
+                 final Component component = factory.create();
+ 
+-                debug(() -> "  @ added %d (index %d) = %s", layoutPosition, index, component.toString());
++                debug(() -> "  @ added %d (index %d) = %s", layoutPosition, index, component);
+                 getInternalComponents().add(component);
+             } catch (final Exception exception) {
+                 debug(() -> "  @ failed to add %d (index %d) = %s", layoutPosition, index, exception.getMessage());
+diff --git a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/DefaultStateValueHost.java b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/DefaultStateValueHost.java
+index e050121d60d533fd55677306fc3d0ea06b011fd8..4b9a363340f204570bcdac70319e1fa70a237fb4 100644
+--- a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/DefaultStateValueHost.java
++++ b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/DefaultStateValueHost.java
+@@ -48,7 +48,7 @@ public class DefaultStateValueHost implements StateValueHost {
+         if (value == null) {
+             value = state.factory().create(this, state);
+             initializeState(id, value);
+-            IFDebug.debug("State %s lazily initialized (initialValue = %s)", id, value.toString());
++            IFDebug.debug("State %s lazily initialized (initialValue = %s)", id, value);
+         }
+ 
+         return value;
 diff --git a/inventory-framework-platform-bukkit/build.gradle.kts b/inventory-framework-platform-bukkit/build.gradle.kts
 index 6a29127fffd904f31720719a40c8f61bf4c1ae05..237bf07ee139b580f0148a28061fb36166787247 100644
 --- a/inventory-framework-platform-bukkit/build.gradle.kts
@@ -762,12 +797,13 @@ index 0000000000000000000000000000000000000000..b7efdbc7bce0e7f68d83abd93aeace52
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..5c413479942dfd5f264279979cb2e84b88d43825
+index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b32657233
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,69 @@
 +package me.devnatan.inventoryframework.internal;
 +
++import java.util.logging.Logger;
 +import me.devnatan.inventoryframework.internal.packet.PacketGuiBackend;
 +import org.bukkit.plugin.Plugin;
 +import org.jetbrains.annotations.ApiStatus;
@@ -786,7 +822,7 @@ index 0000000000000000000000000000000000000000..5c413479942dfd5f264279979cb2e84b
 +        final BukkitGuiBackend bukkitBackend = new BukkitGuiBackend();
 +        final String configuredBackend = System.getProperty(BACKEND_PROPERTY, "bukkit");
 +        if (!PACKET_BACKEND.equalsIgnoreCase(configuredBackend)) {
-+            owner.getLogger()
++            logger(owner)
 +                    .warning("[IF] GUI backend: Bukkit fallback enabled. "
 +                            + "Inventory GUIs use real Bukkit inventory items. "
 +                            + "To enable packet mode, start the server with -D"
@@ -801,7 +837,7 @@ index 0000000000000000000000000000000000000000..5c413479942dfd5f264279979cb2e84b
 +        }
 +
 +        if (!isPacketEventsPresent()) {
-+            owner.getLogger()
++            logger(owner)
 +                    .warning("[IF] GUI backend: Bukkit fallback enabled. "
 +                            + "Packet mode was requested, but PacketEvents is not available. "
 +                            + "Inventory GUIs use real Bukkit inventory items. "
@@ -811,13 +847,18 @@ index 0000000000000000000000000000000000000000..5c413479942dfd5f264279979cb2e84b
 +            return bukkitBackend;
 +        }
 +
-+        owner.getLogger()
++        logger(owner)
 +                .fine("[IF] GUI backend: Packet mode requested. "
 +                        + "PacketEvents is present. "
 +                        + "Registering packet GUI backend using -D"
 +                        + BACKEND_PROPERTY
 +                        + "=" + PACKET_BACKEND + ".");
 +        return new PacketGuiBackend(owner, bukkitBackend);
++    }
++
++    private static Logger logger(Plugin owner) {
++        final Logger logger = owner.getLogger();
++        return logger == null ? Logger.getLogger("InventoryFramework") : logger;
 +    }
 +
 +    private static boolean isPacketEventsPresent() {
@@ -831,16 +872,18 @@ index 0000000000000000000000000000000000000000..5c413479942dfd5f264279979cb2e84b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564772ac33f
+index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a42cbe445
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,861 @@
+@@ -0,0 +1,964 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
 +import com.github.retrooper.packetevents.event.PacketListenerCommon;
 +import com.github.retrooper.packetevents.manager.server.ServerVersion;
++import com.github.retrooper.packetevents.netty.channel.ChannelHelper;
 +import com.github.retrooper.packetevents.protocol.player.User;
++import com.github.retrooper.packetevents.wrapper.PacketWrapper;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCloseWindow;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenWindow;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetCursorItem;
@@ -878,6 +921,8 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +
 +public final class PacketGuiBackend implements GuiBackend {
 +
++    private static final boolean ASYNC_PACKET_SEND =
++            Boolean.parseBoolean(System.getProperty("me.devnatan.inventoryframework.packet.async-send", "true"));
 +    private static final int MAX_WINDOW_ID = 127;
 +    private static final String CLOSE_ORIGIN_CLIENT = "packet-gui-client-close";
 +    private static final String CLOSE_ORIGIN_SERVER = "packet-gui-server-close";
@@ -1392,30 +1437,36 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +        final boolean sendFullWindow = hardResync || reopen || previous == null;
 +
 +        try {
++            final List<PacketWrapper<?>> packets = new ArrayList<>();
 +            if (sendFullWindow) {
 +                session.viewerInventory().snapshotFrom(session.player());
 +            }
 +
 +            if (reopen) {
-+                sendOpenWindow(session, render);
++                addOpenWindow(packets, session, render);
 +            }
 +
 +            if (sendFullWindow) {
-+                sendWindowItems(session, render);
++                addWindowItems(packets, session, render);
 +            } else {
-+                sendChangedTopSlots(session, previous, render, forcedTopSlotRepairs);
-+                sendPlayerSlotRepairs(session, render, playerSlotRepairs);
++                addChangedTopSlots(packets, session, previous, render, forcedTopSlotRepairs);
++                addPlayerSlotRepairs(packets, session, render, playerSlotRepairs);
 +            }
 +
-+            sendCursor(session);
++            addCursor(packets, session);
 +            session.appliedRender(render);
++            sendRenderPlan(session, new PacketGuiSendPlan(
++                    session.user(),
++                    session.windowId(),
++                    session.nextSendGeneration(),
++                    packets));
 +        } catch (final RuntimeException exception) {
 +            owner.getLogger().log(Level.WARNING, "Failed to send packet GUI render", exception);
 +            closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
 +        }
 +    }
 +
-+    private void sendOpenWindow(PacketGuiSession session, PacketGuiRender render) {
++    private void addOpenWindow(List<PacketWrapper<?>> packets, PacketGuiSession session, PacketGuiRender render) {
 +        final ServerVersion version = PacketEvents.getAPI().getServerManager().getVersion();
 +        final WrapperPlayServerOpenWindow packet;
 +        if (version.isNewerThanOrEquals(ServerVersion.V_1_14)) {
@@ -1425,10 +1476,10 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +                    session.windowId(), "minecraft:chest", render.title(), render.size(), 0);
 +        }
 +
-+        session.user().sendPacket(packet);
++        packets.add(packet);
 +    }
 +
-+    private void sendWindowItems(PacketGuiSession session, PacketGuiRender render) {
++    private void addWindowItems(List<PacketWrapper<?>> packets, PacketGuiSession session, PacketGuiRender render) {
 +        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items =
 +                new ArrayList<>(render.size() + 36);
 +        for (int slot = 0; slot < render.size(); slot++) {
@@ -1436,15 +1487,15 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +        }
 +        items.addAll(session.viewerInventory().mainAndHotbarItems());
 +
-+        session.user()
-+                .sendPacket(new WrapperPlayServerWindowItems(
-+                        session.windowId(),
-+                        session.nextStateId(),
-+                        items,
-+                        session.viewerInventory().cursor()));
++        packets.add(new WrapperPlayServerWindowItems(
++                session.windowId(),
++                session.nextStateId(),
++                items,
++                session.viewerInventory().cursor()));
 +    }
 +
-+    private void sendChangedTopSlots(
++    private void addChangedTopSlots(
++            List<PacketWrapper<?>> packets,
 +            PacketGuiSession session,
 +            PacketGuiRender previous,
 +            PacketGuiRender render,
@@ -1460,16 +1511,19 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +                stateId = session.nextStateId();
 +            }
 +
-+            session.user()
-+                    .sendPacket(new WrapperPlayServerSetSlot(
-+                            session.windowId(),
-+                            stateId,
-+                            slot,
-+                            session.packetItem(render, slot)));
++            packets.add(new WrapperPlayServerSetSlot(
++                    session.windowId(),
++                    stateId,
++                    slot,
++                    session.packetItem(render, slot)));
 +        }
 +    }
 +
-+    private void sendPlayerSlotRepairs(PacketGuiSession session, PacketGuiRender render, int[] playerSlotRepairs) {
++    private void addPlayerSlotRepairs(
++            List<PacketWrapper<?>> packets,
++            PacketGuiSession session,
++            PacketGuiRender render,
++            int[] playerSlotRepairs) {
 +        if (playerSlotRepairs.length == 0) {
 +            return;
 +        }
@@ -1484,21 +1538,19 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +                    stateId = session.nextStateId();
 +                }
 +
-+                session.user()
-+                        .sendPacket(new WrapperPlayServerSetSlot(
-+                                session.windowId(),
-+                                stateId,
-+                                openGuiSlot,
-+                                item));
++                packets.add(new WrapperPlayServerSetSlot(
++                        session.windowId(),
++                        stateId,
++                        openGuiSlot,
++                        item));
 +                continue;
 +            }
 +
-+            session.user()
-+                    .sendPacket(new WrapperPlayServerSetSlot(
-+                            PacketInventoryConstants.PLAYER_WINDOW_ID,
-+                            session.nextStateId(),
-+                            playerSlot,
-+                            item));
++            packets.add(new WrapperPlayServerSetSlot(
++                    PacketInventoryConstants.PLAYER_WINDOW_ID,
++                    session.nextStateId(),
++                    playerSlot,
++                    item));
 +        }
 +    }
 +
@@ -1542,6 +1594,56 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +        session.user().sendPacket(new WrapperPlayServerSetCursorItem(session.viewerInventory().cursor()));
 +    }
 +
++    private void addCursor(List<PacketWrapper<?>> packets, PacketGuiSession session) {
++        packets.add(new WrapperPlayServerSetCursorItem(session.viewerInventory().cursor()));
++    }
++
++    private void sendRenderPlan(PacketGuiSession session, PacketGuiSendPlan plan) {
++        if (plan.isEmpty()) {
++            return;
++        }
++
++        if (!ASYNC_PACKET_SEND) {
++            sendRenderPlanNow(session, plan);
++            return;
++        }
++
++        try {
++            ChannelHelper.runInEventLoop(plan.channel(), () -> sendRenderPlanNow(session, plan));
++        } catch (final RuntimeException exception) {
++            owner.getLogger().log(Level.WARNING, "Failed to schedule async packet GUI send", exception);
++            sendRenderPlanNow(session, plan);
++        }
++    }
++
++    private void sendRenderPlanNow(PacketGuiSession session, PacketGuiSendPlan plan) {
++        if (!canSendPlan(session, plan)) {
++            return;
++        }
++
++        try {
++            for (final PacketWrapper<?> packet : plan.packets()) {
++                if (!canSendPlan(session, plan)) {
++                    return;
++                }
++
++                plan.user().writePacket(packet);
++            }
++            plan.user().flushPackets();
++        } catch (final RuntimeException exception) {
++            owner.getLogger().log(Level.WARNING, "Failed to send async packet GUI render", exception);
++            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
++        }
++    }
++
++    private boolean canSendPlan(PacketGuiSession session, PacketGuiSendPlan plan) {
++        return isTracked(session)
++                && !session.closeRequested()
++                && session.windowId() == plan.windowId()
++                && session.acceptsSendGeneration(plan.generation())
++                && ChannelHelper.isOpen(plan.channel());
++    }
++
 +    private boolean closeSession(
 +            PacketGuiSession session, boolean sendClosePacket, Object origin, boolean callClose, boolean syncInventory) {
 +        if (session == null) {
@@ -1557,6 +1659,7 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +            if (session.closed()) {
 +                return false;
 +            }
++            session.invalidatePendingSends();
 +            session.closeRequested(true);
 +            session.closed(true);
 +        }
@@ -1693,6 +1796,47 @@ index 0000000000000000000000000000000000000000..652e5313677a6a994ab82e3863715564
 +            return null;
 +        } catch (final ReflectiveOperationException ignored) {
 +            return Boolean.FALSE;
++        }
++    }
++
++    private static final class PacketGuiSendPlan {
++
++        private final User user;
++        private final Object channel;
++        private final int windowId;
++        private final long generation;
++        private final List<PacketWrapper<?>> packets;
++
++        private PacketGuiSendPlan(User user, int windowId, long generation, List<PacketWrapper<?>> packets) {
++            this.user = user;
++            this.channel = user.getChannel();
++            this.windowId = windowId;
++            this.generation = generation;
++            this.packets = List.copyOf(packets);
++        }
++
++        private User user() {
++            return user;
++        }
++
++        private Object channel() {
++            return channel;
++        }
++
++        private int windowId() {
++            return windowId;
++        }
++
++        private long generation() {
++            return generation;
++        }
++
++        private List<PacketWrapper<?>> packets() {
++            return packets;
++        }
++
++        private boolean isEmpty() {
++            return packets.isEmpty();
 +        }
 +    }
 +}
@@ -2144,10 +2288,10 @@ index 0000000000000000000000000000000000000000..838bd2a2606696d3dafc5430b179410b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..9c49c2dfe15932b8c35caa86e5c64f5910072ec3
+index 0000000000000000000000000000000000000000..b52ac34974ca8b80d4ace58bd6cd92bba31910e4
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,323 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
@@ -2180,6 +2324,8 @@ index 0000000000000000000000000000000000000000..9c49c2dfe15932b8c35caa86e5c64f59
 +    private boolean closed;
 +    private boolean closeRequested;
 +    private int stateId = 1;
++    private long sendGeneration;
++    private long invalidatedSendGeneration;
 +
 +    PacketGuiSession(
 +            BukkitViewer viewer,
@@ -2262,6 +2408,18 @@ index 0000000000000000000000000000000000000000..9c49c2dfe15932b8c35caa86e5c64f59
 +
 +    synchronized int nextStateId() {
 +        return stateId++;
++    }
++
++    synchronized long nextSendGeneration() {
++        return ++sendGeneration;
++    }
++
++    synchronized void invalidatePendingSends() {
++        invalidatedSendGeneration = sendGeneration;
++    }
++
++    synchronized boolean acceptsSendGeneration(long generation) {
++        return generation > invalidatedSendGeneration;
 +    }
 +
 +    synchronized boolean scheduleRender(
