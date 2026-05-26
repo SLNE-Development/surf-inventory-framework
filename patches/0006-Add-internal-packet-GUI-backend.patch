@@ -13,13 +13,13 @@ index 89850fa8d67a4ff08fbe5997ab94625e50c0cf19..daec84d3a7722c8390ae6624b01b84d5
  minestom = "b39badc77b"
  folialib = "0.5.1"
 +packetevents = "2.12.1"
- 
+
  [libraries.spigot]
  module = "org.spigotmc:spigot-api"
 @@ -57,10 +58,14 @@ version.ref = "minestom"
  module = "com.tcoded:FoliaLib"
  version.ref = "folialib"
- 
+
 +[libraries.packetevents-spigot]
 +module = "com.github.retrooper:packetevents-spigot"
 +version.ref = "packetevents"
@@ -59,7 +59,7 @@ index 16e4791981a4fd159659190b2ac3e1a961e28e90..78c704d7457a6fe653346e5d10037292
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
 @@ -52,7 +52,12 @@ public final class BukkitViewer implements Viewer {
- 
+
      @Override
      public void open(@NotNull final ViewContainer container) {
 -        getPlayer().openInventory(((BukkitViewContainer) container).getInventory());
@@ -70,7 +70,7 @@ index 16e4791981a4fd159659190b2ac3e1a961e28e90..78c704d7457a6fe653346e5d10037292
 +
 +        container.open(this);
      }
- 
+
      @Override
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954f050938e 100644
@@ -95,10 +95,10 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
  import org.bukkit.event.player.PlayerPickupItemEvent;
 @@ -24,9 +27,15 @@ import org.bukkit.inventory.PlayerInventory;
  final class IFInventoryListener implements Listener {
- 
+
      private final ViewFrame viewFrame;
 +    private final GuiBackend guiBackend;
- 
+
      public IFInventoryListener(ViewFrame viewFrame) {
 +        this(viewFrame, new BukkitGuiBackend());
 +    }
@@ -107,7 +107,7 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
          this.viewFrame = viewFrame;
 +        this.guiBackend = guiBackend;
      }
- 
+
      @EventHandler
 @@ -39,6 +48,8 @@ final class IFInventoryListener implements Listener {
      @EventHandler
@@ -117,11 +117,11 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
 +
          final Viewer viewer = viewFrame.getViewer(player);
          if (viewer == null) return;
- 
+
 @@ -49,6 +60,13 @@ final class IFInventoryListener implements Listener {
          root.getPipeline().execute(StandardPipelinePhases.CLOSE, closeContext);
      }
- 
+
 +    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
 +    public void onInventoryOpen(final InventoryOpenEvent event) {
 +        if (!(event.getPlayer() instanceof Player)) return;
@@ -147,21 +147,21 @@ index 2d97a162afacb6aa9652d9d83079088761bbd35b..4dc75f811d1a888cee0851a70377ac76
  import org.bukkit.entity.Player;
 @@ -35,10 +37,12 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
                      + "https://github.com/DevNatan/inventory-framework/wiki/Installation#preventing-library-conflicts";
- 
+
      private final Plugin owner;
 +    private final GuiBackend guiBackend;
      private final FeatureInstaller<ViewFrame> featureInstaller = new DefaultFeatureInstaller<>(this);
- 
+
      private ViewFrame(Plugin owner) {
          this.owner = owner;
 +        this.guiBackend = GuiBackendFactory.create(owner);
      }
- 
+
      @NotNull
 @@ -186,13 +190,14 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
      public final ViewFrame register() {
          if (isRegistered()) throw new IllegalStateException("This view frame is already registered");
- 
+
 -        PlatformUtils.setFactory(new BukkitElementFactory(getOwner()));
 +        PlatformUtils.setFactory(new BukkitElementFactory(getOwner(), guiBackend));
 +        guiBackend.register();
@@ -174,14 +174,14 @@ index 2d97a162afacb6aa9652d9d83079088761bbd35b..4dc75f811d1a888cee0851a70377ac76
 +        getOwner().getServer().getPluginManager().registerEvents(new IFInventoryListener(this, guiBackend), getOwner());
          return this;
      }
- 
+
 @@ -213,6 +218,7 @@ public class ViewFrame extends IFViewFrame<ViewFrame, View> {
              iterator.remove();
          }
          getPipeline().execute(IFViewFrame.FRAME_UNREGISTERED, this);
 +        guiBackend.unregister();
      }
- 
+
      // region Internals
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
 new file mode 100644
@@ -423,7 +423,7 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..e1ccb7b9309017dbf69102f151151824
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
 @@ -169,6 +169,12 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
- 
+
      @Override
      public @NotNull Inventory getInventory() {
 -        return ((BukkitViewContainer) getContainerOrThrow()).getInventory();
@@ -461,7 +461,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
 +    private final InventoryClickEvent inventoryClickOrigin;
      private final boolean combined;
      private boolean cancelled;
- 
+
 @@ -32,19 +30,37 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
              @Nullable Component clickedComponent,
              @NotNull InventoryClickEvent clickOrigin,
@@ -492,7 +492,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
          this.combined = combined;
 +        this.cancelled = this.clickOrigin.isCancelled();
      }
- 
+
      /**
       * The player who clicked on the slot.
       */
@@ -500,7 +500,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
 -        return (Player) clickOrigin.getWhoClicked();
 +        return clickOrigin.getPlayer();
      }
- 
+
      /**
 @@ -55,7 +71,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
       */
@@ -513,7 +513,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
 +
 +        return inventoryClickOrigin;
      }
- 
+
      /**
 @@ -84,12 +104,12 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      @Override
@@ -522,64 +522,64 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e27
 -        getClickOrigin().setCancelled(cancelled);
 +        clickOrigin.setCancelled(cancelled);
      }
- 
+
      @Override
      public final Object getPlatformEvent() {
 -        return clickOrigin;
 +        return clickOrigin.getPlatformEvent();
      }
- 
+
      @Override
 @@ -99,42 +119,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
- 
+
      @Override
      public final boolean isLeftClick() {
 -        return getClickOrigin().isLeftClick();
 +        return clickOrigin.isLeftClick();
      }
- 
+
      @Override
      public final boolean isRightClick() {
 -        return getClickOrigin().isRightClick();
 +        return clickOrigin.isRightClick();
      }
- 
+
      @Override
      public final boolean isMiddleClick() {
 -        return getClickOrigin().getClick() == ClickType.MIDDLE;
 +        return clickOrigin.isMiddleClick();
      }
- 
+
      @Override
      public final boolean isShiftClick() {
 -        return getClickOrigin().isShiftClick();
 +        return clickOrigin.isShiftClick();
      }
- 
+
      @Override
      public final boolean isKeyboardClick() {
 -        return getClickOrigin().getClick().isKeyboardClick();
 +        return clickOrigin.isKeyboardClick();
      }
- 
+
      @Override
      public final boolean isOutsideClick() {
 -        return getClickOrigin().getSlotType() == InventoryType.SlotType.OUTSIDE;
 +        return clickOrigin.isOutsideClick();
      }
- 
+
      @Override
      public final String getClickIdentifier() {
 -        return getClickOrigin().getClick().name();
 +        return clickOrigin.getClickIdentifier();
      }
- 
+
      @Override
      public final boolean isOnEntityContainer() {
 -        return getClickOrigin().getClickedInventory() instanceof PlayerInventory;
 +        return clickOrigin.isOnEntityContainer();
      }
- 
+
      @Override
 @@ -176,4 +196,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      public final boolean isCombined() {
@@ -658,10 +658,10 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
  import org.jetbrains.annotations.Nullable;
 @@ -30,9 +26,15 @@ public class BukkitElementFactory extends ElementFactory {
      private Boolean worksInCurrentPlatform = null;
- 
+
      private final FoliaLib foliaLib;
 +    private final GuiBackend guiBackend;
- 
+
      public BukkitElementFactory(Plugin plugin) {
 +        this(plugin, new BukkitGuiBackend());
 +    }
@@ -670,12 +670,12 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
          this.foliaLib = new FoliaLib(plugin);
 +        this.guiBackend = guiBackend;
      }
- 
+
      @Override
 @@ -57,11 +59,7 @@ public class BukkitElementFactory extends ElementFactory {
                      finalType.getMaxSize(),
                      context.getRoot().getClass().getName()));
- 
+
 -        final InventoryHolder holder = context instanceof InventoryHolder ? (InventoryHolder) context : null;
 -        final Inventory inventory =
 -                InventoryFactory.current().createInventory(holder, finalType, size, config.getTitle());
@@ -683,7 +683,7 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
 -        return new BukkitViewContainer(inventory, false, finalType, false);
 +        return guiBackend.createContainer(context, finalType, size, config.getTitle());
      }
- 
+
      @Override
 @@ -109,7 +107,7 @@ public class BukkitElementFactory extends ElementFactory {
                  whoClicked,
@@ -693,7 +693,7 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
 +                origin,
                  combined);
      }
- 
+
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..d4e57da254cdf676539e0ee3ab3862b7e7e27a5f
@@ -765,7 +765,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..a490dc1acbcb9ec3a7fdaafb36fce1b12d288005
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,63 @@
 +package me.devnatan.inventoryframework.internal;
 +
 +import me.devnatan.inventoryframework.internal.packet.PacketGuiBackend;
@@ -786,16 +786,37 @@ index 0000000000000000000000000000000000000000..a490dc1acbcb9ec3a7fdaafb36fce1b1
 +        final BukkitGuiBackend bukkitBackend = new BukkitGuiBackend();
 +        final String configuredBackend = System.getProperty(BACKEND_PROPERTY, "bukkit");
 +        if (!PACKET_BACKEND.equalsIgnoreCase(configuredBackend)) {
++            owner.getLogger()
++                    .warning("[IF] GUI backend: Bukkit fallback enabled. "
++                            + "Inventory GUIs use real Bukkit inventory items. "
++                            + "To enable packet mode, start the server with -D"
++                            + BACKEND_PROPERTY
++                            + "="
++                            + PACKET_BACKEND
++                            + ". "
++                            + "PacketEvents must be installed and enabled. "
++                            + "Current value: "
++                            + configuredBackend);
 +            return bukkitBackend;
 +        }
 +
 +        if (!isPacketEventsPresent()) {
 +            owner.getLogger()
-+                    .warning("Packet GUI backend requested, but PacketEvents is not available. "
-+                            + "Falling back to the Bukkit inventory backend.");
++                    .warning("[IF] GUI backend: Bukkit fallback enabled. "
++                            + "Packet mode was requested, but PacketEvents is not available. "
++                            + "Inventory GUIs use real Bukkit inventory items. "
++                            + "Install/enable PacketEvents to use packet mode with -D"
++                            + BACKEND_PROPERTY
++                            + "=" + PACKET_BACKEND + ".");
 +            return bukkitBackend;
 +        }
 +
++        owner.getLogger()
++                .fine("[IF] GUI backend: Packet mode requested. "
++                        + "PacketEvents is present. "
++                        + "Registering packet GUI backend using -D"
++                        + BACKEND_PROPERTY
++                        + "=" + PACKET_BACKEND + ".");
 +        return new PacketGuiBackend(owner, bukkitBackend);
 +    }
 +
@@ -808,12 +829,13 @@ index 0000000000000000000000000000000000000000..a490dc1acbcb9ec3a7fdaafb36fce1b1
 +        }
 +    }
 +}
+
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f124a55707c
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,742 @@
+@@ -0,0 +1,767 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -902,12 +924,16 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            if (PacketEvents.getAPI() == null || !PacketEvents.getAPI().isInitialized()) {
 +                available = false;
 +                owner.getLogger()
-+                        .warning("Packet GUI backend requested, but PacketEvents is not initialized. "
-+                                + "Falling back to the Bukkit inventory backend.");
++                        .warning("[IF] GUI backend: Bukkit fallback enabled. "
++                                + "Packet mode was requested, but PacketEvents is not initialized. "
++                                + "Inventory GUIs use real Bukkit inventory items. "
++                                + "Ensure PacketEvents loads before InventoryFramework to use packet mode.");
 +                return;
 +            }
 +
 +            listener = PacketEvents.getAPI().getEventManager().registerListener(new PacketGuiPacketListener(this));
++            owner.getLogger()
++                    .info("[IF] GUI backend: Packet mode enabled. Inventory GUIs are rendered with fake packet items.");
 +        } catch (final RuntimeException exception) {
 +            available = false;
 +            owner.getLogger().log(Level.WARNING, "Failed to register packet GUI backend. Falling back to Bukkit.", exception);
@@ -1293,7 +1319,27 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            return;
 +        }
 +
++        if (click.isOffhandSwapClick()) {
++            repairOffhandSlot(session);
++        }
 +        requestRender(session, false, click.needsHardRepair());
++    }
++
++    private void repairOffhandSlot(PacketGuiSession session) {
++        if (!isTracked(session) || session.closeRequested()) {
++            return;
++        }
++
++        final com.github.retrooper.packetevents.protocol.item.ItemStack offhandItem =
++                PacketItemConverter.toPacket(session.player().getInventory().getItemInOffHand());
++        session.viewerInventory().applySlot(PacketInventoryConstants.SLOT_OFFHAND, offhandItem);
++        session.user()
++                .sendPacket(new WrapperPlayServerSetSlot(
++                        PacketInventoryConstants.PLAYER_WINDOW_ID,
++                        session.nextStateId(),
++                        PacketInventoryConstants.SLOT_OFFHAND,
++                        offhandItem));
++        sendCursor(session);
 +    }
 +
 +    private void requestRender(PacketGuiSession session, boolean forceReopen, boolean hardResync) {
@@ -1561,7 +1607,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1a321b609
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,126 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
@@ -1633,6 +1679,10 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +
 +    boolean isKeyboardClick() {
 +        return isSwapClick();
++    }
++
++    boolean isOffhandSwapClick() {
++        return isSwapClick() && button == OFFHAND_SWAP_BUTTON;
 +    }
 +
 +    String clickIdentifier() {
@@ -2817,19 +2867,19 @@ index ec3bd553181923362bece51aff5fec6983a8a52f..b5888370d5c9703c7487d4312df7e9c9
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
 @@ -4,7 +4,6 @@ import static me.devnatan.inventoryframework.ViewConfig.CANCEL_ON_CLICK;
- 
+
  import me.devnatan.inventoryframework.VirtualView;
  import me.devnatan.inventoryframework.context.SlotClickContext;
 -import org.bukkit.event.inventory.InventoryClickEvent;
  import org.jetbrains.annotations.NotNull;
- 
+
  /**
 @@ -18,10 +17,9 @@ public final class GlobalClickInterceptor implements PipelineInterceptor<Virtual
          if (!(subject instanceof SlotClickContext)) return;
- 
+
          final SlotClickContext context = (SlotClickContext) subject;
 -        final InventoryClickEvent event = context.getClickOrigin();
- 
+
          // inherit cancellation so we can un-cancel it
 -        context.setCancelled(event.isCancelled() || context.getConfig().isOptionSet(CANCEL_ON_CLICK, true));
 +        context.setCancelled(context.isCancelled() || context.getConfig().isOptionSet(CANCEL_ON_CLICK, true));
@@ -2847,16 +2897,16 @@ index db6b8c48c4c406e78aa84d3af4a15d0421ff53b0..4047e6e71b9e3086810236355f64e735
 -import org.bukkit.event.inventory.InventoryClickEvent;
 -import org.bukkit.event.inventory.InventoryType;
  import org.jetbrains.annotations.NotNull;
- 
+
  /**
 @@ -18,8 +16,7 @@ public final class ItemClickInterceptor implements PipelineInterceptor<VirtualVi
          if (!(subject instanceof SlotClickContext)) return;
- 
+
          final SlotClickContext context = (SlotClickContext) subject;
 -        final InventoryClickEvent event = context.getClickOrigin();
 -        if (event.getSlotType() == InventoryType.SlotType.OUTSIDE) return;
 +        if (context.isOutsideClick()) return;
- 
+
          final Component component = context.getComponent();
          if (component == null) return;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java
@@ -2870,16 +2920,16 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
 -import org.bukkit.event.inventory.InventoryClickEvent;
 -import org.bukkit.event.inventory.InventoryType;
  import org.jetbrains.annotations.NotNull;
- 
+
  /**
 @@ -19,8 +17,7 @@ public final class ItemCloseOnClickInterceptor implements PipelineInterceptor<Vi
          if (!(subject instanceof SlotClickContext)) return;
- 
+
          final SlotClickContext context = (SlotClickContext) subject;
 -        final InventoryClickEvent event = context.getClickOrigin();
 -        if (event.getSlotType() == InventoryType.SlotType.OUTSIDE) return;
 +        if (context.isOutsideClick()) return;
- 
+
          final Component component = context.getComponent();
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
 diff --git a/settings.gradle.kts b/settings.gradle.kts
@@ -2894,4 +2944,4 @@ index 05585a2bd587532365bfe98563ecc18047386144..f26ceb55f94d93d4eaf30706bf82998b
 +        maven("https://repo.codemc.io/repository/maven-snapshots/")
      }
  }
- 
+
