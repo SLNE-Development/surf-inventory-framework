@@ -872,10 +872,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a42cbe445
+index 0000000000000000000000000000000000000000..34e42f25c77bce6eba4fd543e071c9f8a4ed8faa
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,964 @@
+@@ -0,0 +1,1263 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -895,6 +895,10 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +import java.util.UUID;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.concurrent.ConcurrentMap;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.RejectedExecutionException;
++import java.util.concurrent.ThreadFactory;
 +import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.logging.Level;
 +import java.util.function.Consumer;
@@ -923,6 +927,9 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +
 +    private static final boolean ASYNC_PACKET_SEND =
 +            Boolean.parseBoolean(System.getProperty("me.devnatan.inventoryframework.packet.async-send", "true"));
++    private static final boolean ASYNC_ITEM_CONVERSION = Boolean.parseBoolean(
++            System.getProperty("me.devnatan.inventoryframework.packet.async-conversion", "true"));
++    private static final int ASYNC_ITEM_CONVERSION_THREADS = 2;
 +    private static final int MAX_WINDOW_ID = 127;
 +    private static final String CLOSE_ORIGIN_CLIENT = "packet-gui-client-close";
 +    private static final String CLOSE_ORIGIN_SERVER = "packet-gui-server-close";
@@ -935,12 +942,16 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +    private final ConcurrentMap<UUID, PacketGuiSession> sessions = new ConcurrentHashMap<>();
 +    private final ConcurrentMap<UUID, PacketViewerInventory> viewerInventories = new ConcurrentHashMap<>();
 +    private final AtomicInteger nextWindowId = new AtomicInteger(1);
++    private final ExecutorService conversionExecutor;
 +    private PacketListenerCommon listener;
 +    private volatile boolean available = true;
 +
 +    public PacketGuiBackend(@NotNull Plugin owner, @NotNull BukkitGuiBackend fallbackBackend) {
 +        this.owner = owner;
 +        this.fallbackBackend = fallbackBackend;
++        this.conversionExecutor = Executors.newFixedThreadPool(
++                ASYNC_ITEM_CONVERSION_THREADS,
++                new PacketGuiThreadFactory("IF Packet GUI Item Converter"));
 +    }
 +
 +    @Override
@@ -981,6 +992,19 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +            owner.getLogger()
 +                    .info("[IF] GUI backend: Packet mode enabled. Inventory GUIs are rendered with fake packet items. "
 +                            + "This is the recommended mode for preventing GUI item duplication.");
++            if (ASYNC_ITEM_CONVERSION) {
++                owner.getLogger()
++                        .info("[IF] Packet GUI async item conversion: enabled. "
++                                + "Bukkit-to-packet item conversion is offloaded to "
++                                + ASYNC_ITEM_CONVERSION_THREADS
++                                + " dedicated worker threads.");
++            } else {
++                owner.getLogger()
++                        .warning("[IF] Packet GUI async item conversion: disabled. "
++                                + "Bukkit-to-packet item conversion will run on the player/region scheduler and may "
++                                + "increase GUI click/render load. Re-enable with "
++                                + "-Dme.devnatan.inventoryframework.packet.async-conversion=true.");
++            }
 +        } catch (final RuntimeException exception) {
 +            available = false;
 +            owner.getLogger().log(Level.WARNING, "Failed to register packet GUI backend. Falling back to Bukkit.", exception);
@@ -994,6 +1018,7 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +        }
 +        sessions.clear();
 +        viewerInventories.clear();
++        conversionExecutor.shutdownNow();
 +
 +        if (listener == null) {
 +            return;
@@ -1437,65 +1462,127 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +        final boolean sendFullWindow = hardResync || reopen || previous == null;
 +
 +        try {
-+            final List<PacketWrapper<?>> packets = new ArrayList<>();
-+            if (sendFullWindow) {
-+                session.viewerInventory().snapshotFrom(session.player());
-+            }
-+
-+            if (reopen) {
-+                addOpenWindow(packets, session, render);
-+            }
-+
-+            if (sendFullWindow) {
-+                addWindowItems(packets, session, render);
-+            } else {
-+                addChangedTopSlots(packets, session, previous, render, forcedTopSlotRepairs);
-+                addPlayerSlotRepairs(packets, session, render, playerSlotRepairs);
-+            }
-+
-+            addCursor(packets, session);
-+            session.appliedRender(render);
-+            sendRenderPlan(session, new PacketGuiSendPlan(
++            final PlayerInventorySnapshot playerInventorySnapshot = sendFullWindow
++                    ? snapshotPlayerInventory(session.player())
++                    : null;
++            final PacketGuiConversionPlan conversionPlan = new PacketGuiConversionPlan(
 +                    session.user(),
 +                    session.windowId(),
-+                    session.nextSendGeneration(),
-+                    packets));
++                    session.nextSendGeneration());
++
++            if (reopen) {
++                addOpenWindow(conversionPlan, session, render);
++            }
++
++            if (sendFullWindow) {
++                addWindowItems(conversionPlan, session, render, playerInventorySnapshot);
++                addCursor(conversionPlan, playerInventorySnapshot.cursor());
++            } else {
++                addChangedTopSlots(conversionPlan, session, previous, render, forcedTopSlotRepairs);
++                addPlayerSlotRepairs(conversionPlan, session, render, playerSlotRepairs);
++                addCursor(conversionPlan, session.viewerInventory().cursor());
++            }
++
++            session.appliedRender(render);
++            convertAndSendRenderPlan(session, conversionPlan);
 +        } catch (final RuntimeException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to send packet GUI render", exception);
++            owner.getLogger().log(Level.WARNING, "Failed to prepare packet GUI render", exception);
 +            closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
 +        }
 +    }
 +
-+    private void addOpenWindow(List<PacketWrapper<?>> packets, PacketGuiSession session, PacketGuiRender render) {
++    private void addOpenWindow(PacketGuiConversionPlan conversionPlan, PacketGuiSession session, PacketGuiRender render) {
 +        final ServerVersion version = PacketEvents.getAPI().getServerManager().getVersion();
-+        final WrapperPlayServerOpenWindow packet;
-+        if (version.isNewerThanOrEquals(ServerVersion.V_1_14)) {
-+            packet = new WrapperPlayServerOpenWindow(session.windowId(), render.rows() - 1, render.title());
-+        } else {
-+            packet = new WrapperPlayServerOpenWindow(
-+                    session.windowId(), "minecraft:chest", render.title(), render.size(), 0);
-+        }
-+
-+        packets.add(packet);
++        final boolean modernWindowType = version.isNewerThanOrEquals(ServerVersion.V_1_14);
++        final int windowId = session.windowId();
++        final int rows = render.rows();
++        final int size = render.size();
++        final net.kyori.adventure.text.Component title = render.title();
++        conversionPlan.addOperation((targetSession, packets) -> {
++            final WrapperPlayServerOpenWindow packet;
++            if (modernWindowType) {
++                packet = new WrapperPlayServerOpenWindow(windowId, rows - 1, title);
++            } else {
++                packet = new WrapperPlayServerOpenWindow(windowId, "minecraft:chest", title, size, 0);
++            }
++            packets.add(packet);
++            return true;
++        });
 +    }
 +
-+    private void addWindowItems(List<PacketWrapper<?>> packets, PacketGuiSession session, PacketGuiRender render) {
-+        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items =
-+                new ArrayList<>(render.size() + 36);
++    private void addWindowItems(
++            PacketGuiConversionPlan conversionPlan,
++            PacketGuiSession session,
++            PacketGuiRender render,
++            PlayerInventorySnapshot playerInventorySnapshot) {
++        final int stateId = session.nextStateId();
++        final PacketGuiSession.PacketItemSnapshot[] topItems =
++                new PacketGuiSession.PacketItemSnapshot[render.size()];
 +        for (int slot = 0; slot < render.size(); slot++) {
-+            items.add(session.packetItem(render, slot));
++            topItems[slot] = session.packetItemSnapshot(render, slot);
 +        }
-+        items.addAll(session.viewerInventory().mainAndHotbarItems());
 +
-+        packets.add(new WrapperPlayServerWindowItems(
-+                session.windowId(),
-+                session.nextStateId(),
-+                items,
-+                session.viewerInventory().cursor()));
++        conversionPlan.addOperation((targetSession, packets) -> {
++            final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items =
++                    new ArrayList<>(topItems.length + 36);
++            for (final PacketGuiSession.PacketItemSnapshot topItem : topItems) {
++                if (!canConvertPlan(targetSession, conversionPlan)) {
++                    return false;
++                }
++                items.add(convertTopItem(targetSession, topItem));
++            }
++
++            for (int slot = PacketInventoryConstants.ITEMS_START;
++                    slot < PacketInventoryConstants.ITEMS_START + 27;
++                    slot++) {
++                if (!addConvertedPlayerInventoryItem(targetSession, conversionPlan, playerInventorySnapshot, items, slot)) {
++                    return false;
++                }
++            }
++
++            for (int slot = PacketInventoryConstants.HOTBAR_START;
++                    slot < PacketInventoryConstants.HOTBAR_START + 9;
++                    slot++) {
++                if (!addConvertedPlayerInventoryItem(targetSession, conversionPlan, playerInventorySnapshot, items, slot)) {
++                    return false;
++                }
++            }
++
++            final com.github.retrooper.packetevents.protocol.item.ItemStack cursor =
++                    convertBukkitItem(playerInventorySnapshot.cursor());
++            if (!canConvertPlan(targetSession, conversionPlan)) {
++                return false;
++            }
++            targetSession.viewerInventory().applyCursor(cursor);
++
++            packets.add(new WrapperPlayServerWindowItems(
++                    conversionPlan.windowId(),
++                    stateId,
++                    items,
++                    cursor));
++            return true;
++        });
++    }
++
++    private boolean addConvertedPlayerInventoryItem(
++            PacketGuiSession session,
++            PacketGuiConversionPlan conversionPlan,
++            PlayerInventorySnapshot playerInventorySnapshot,
++            List<com.github.retrooper.packetevents.protocol.item.ItemStack> target,
++            int playerWindowSlot) {
++        final com.github.retrooper.packetevents.protocol.item.ItemStack item =
++                convertBukkitItem(playerInventorySnapshot.item(playerWindowSlot));
++        if (!canConvertPlan(session, conversionPlan)) {
++            return false;
++        }
++
++        session.viewerInventory().applySlot(playerWindowSlot, item);
++        target.add(PacketItemConverter.copy(item));
++        return true;
 +    }
 +
 +    private void addChangedTopSlots(
-+            List<PacketWrapper<?>> packets,
++            PacketGuiConversionPlan conversionPlan,
 +            PacketGuiSession session,
 +            PacketGuiRender previous,
 +            PacketGuiRender render,
@@ -1511,16 +1598,28 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +                stateId = session.nextStateId();
 +            }
 +
-+            packets.add(new WrapperPlayServerSetSlot(
-+                    session.windowId(),
-+                    stateId,
-+                    slot,
-+                    session.packetItem(render, slot)));
++            final int currentStateId = stateId;
++            final int currentSlot = slot;
++            final PacketGuiSession.PacketItemSnapshot itemSnapshot = session.packetItemSnapshot(render, currentSlot);
++            conversionPlan.addOperation((targetSession, packets) -> {
++                final com.github.retrooper.packetevents.protocol.item.ItemStack item =
++                        convertTopItem(targetSession, itemSnapshot);
++                if (!canConvertPlan(targetSession, conversionPlan)) {
++                    return false;
++                }
++
++                packets.add(new WrapperPlayServerSetSlot(
++                        conversionPlan.windowId(),
++                        currentStateId,
++                        currentSlot,
++                        item));
++                return true;
++            });
 +        }
 +    }
 +
 +    private void addPlayerSlotRepairs(
-+            List<PacketWrapper<?>> packets,
++            PacketGuiConversionPlan conversionPlan,
 +            PacketGuiSession session,
 +            PacketGuiRender render,
 +            int[] playerSlotRepairs) {
@@ -1528,38 +1627,73 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +            return;
 +        }
 +
-+        int stateId = -1;
++        int guiStateId = -1;
 +        for (final int playerSlot : playerSlotRepairs) {
-+            final com.github.retrooper.packetevents.protocol.item.ItemStack item =
-+                    snapshotPlayerInventorySlot(session, playerSlot);
++            final ItemStack itemSnapshot = cloneItem(playerInventoryItem(session.player(), playerSlot));
 +            final int openGuiSlot = mapPlayerWindowSlotToOpenGuiSlot(render.size(), playerSlot);
++            final int packetWindowId;
++            final int packetSlot;
++            final int stateId;
 +            if (openGuiSlot >= 0) {
-+                if (stateId < 0) {
-+                    stateId = session.nextStateId();
++                if (guiStateId < 0) {
++                    guiStateId = session.nextStateId();
 +                }
-+
-+                packets.add(new WrapperPlayServerSetSlot(
-+                        session.windowId(),
-+                        stateId,
-+                        openGuiSlot,
-+                        item));
-+                continue;
++                packetWindowId = session.windowId();
++                packetSlot = openGuiSlot;
++                stateId = guiStateId;
++            } else {
++                packetWindowId = PacketInventoryConstants.PLAYER_WINDOW_ID;
++                packetSlot = playerSlot;
++                stateId = session.nextStateId();
 +            }
 +
-+            packets.add(new WrapperPlayServerSetSlot(
-+                    PacketInventoryConstants.PLAYER_WINDOW_ID,
-+                    session.nextStateId(),
-+                    playerSlot,
-+                    item));
++            conversionPlan.addOperation((targetSession, packets) -> {
++                final com.github.retrooper.packetevents.protocol.item.ItemStack item = convertBukkitItem(itemSnapshot);
++                if (!canConvertPlan(targetSession, conversionPlan)) {
++                    return false;
++                }
++
++                targetSession.viewerInventory().applySlot(playerSlot, item);
++                packets.add(new WrapperPlayServerSetSlot(packetWindowId, stateId, packetSlot, item));
++                return true;
++            });
 +        }
 +    }
 +
-+    private com.github.retrooper.packetevents.protocol.item.ItemStack snapshotPlayerInventorySlot(
-+            PacketGuiSession session, int playerWindowSlot) {
++    private com.github.retrooper.packetevents.protocol.item.ItemStack convertTopItem(
++            PacketGuiSession session, PacketGuiSession.PacketItemSnapshot snapshot) {
++        if (snapshot.cached()) {
++            return snapshot.cachedPacketItem();
++        }
++
 +        final com.github.retrooper.packetevents.protocol.item.ItemStack item =
-+                PacketItemConverter.toPacket(playerInventoryItem(session.player(), playerWindowSlot));
-+        session.viewerInventory().applySlot(playerWindowSlot, item);
-+        return item;
++                PacketItemConverter.toPacket(snapshot.bukkitItem());
++        session.cachePacketItem(snapshot, item);
++        return PacketItemConverter.copy(item);
++    }
++
++    private static com.github.retrooper.packetevents.protocol.item.ItemStack convertBukkitItem(ItemStack item) {
++        return PacketItemConverter.toPacket(item);
++    }
++
++    private static PlayerInventorySnapshot snapshotPlayerInventory(Player player) {
++        final PlayerInventory inventory = player.getInventory();
++        final ItemStack[] slots = new ItemStack[PacketInventoryConstants.INVENTORY_SIZE];
++
++        for (int slot = 0; slot <= 35; slot++) {
++            slots[PacketInventoryConstants.playerInventorySlotToContainerSlot(slot)] = cloneItem(inventory.getItem(slot));
++        }
++
++        slots[PacketInventoryConstants.SLOT_HELMET] = cloneItem(inventory.getHelmet());
++        slots[PacketInventoryConstants.SLOT_CHESTPLATE] = cloneItem(inventory.getChestplate());
++        slots[PacketInventoryConstants.SLOT_LEGGINGS] = cloneItem(inventory.getLeggings());
++        slots[PacketInventoryConstants.SLOT_BOOTS] = cloneItem(inventory.getBoots());
++        slots[PacketInventoryConstants.SLOT_OFFHAND] = cloneItem(inventory.getItemInOffHand());
++        return new PlayerInventorySnapshot(slots, cloneItem(player.getItemOnCursor()));
++    }
++
++    private static ItemStack cloneItem(ItemStack item) {
++        return item == null ? null : item.clone();
 +    }
 +
 +    private static ItemStack playerInventoryItem(Player player, int playerWindowSlot) {
@@ -1594,8 +1728,83 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +        session.user().sendPacket(new WrapperPlayServerSetCursorItem(session.viewerInventory().cursor()));
 +    }
 +
-+    private void addCursor(List<PacketWrapper<?>> packets, PacketGuiSession session) {
-+        packets.add(new WrapperPlayServerSetCursorItem(session.viewerInventory().cursor()));
++    private void addCursor(PacketGuiConversionPlan conversionPlan, ItemStack cursorSnapshot) {
++        conversionPlan.addOperation((targetSession, packets) -> {
++            final com.github.retrooper.packetevents.protocol.item.ItemStack cursor = convertBukkitItem(cursorSnapshot);
++            if (!canConvertPlan(targetSession, conversionPlan)) {
++                return false;
++            }
++
++            targetSession.viewerInventory().applyCursor(cursor);
++            packets.add(new WrapperPlayServerSetCursorItem(cursor));
++            return true;
++        });
++    }
++
++    private void addCursor(
++            PacketGuiConversionPlan conversionPlan,
++            com.github.retrooper.packetevents.protocol.item.ItemStack cursor) {
++        final com.github.retrooper.packetevents.protocol.item.ItemStack packetCursor = PacketItemConverter.copy(cursor);
++        conversionPlan.addOperation((targetSession, packets) -> {
++            packets.add(new WrapperPlayServerSetCursorItem(packetCursor));
++            return true;
++        });
++    }
++
++    private void convertAndSendRenderPlan(PacketGuiSession session, PacketGuiConversionPlan conversionPlan) {
++        if (conversionPlan.isEmpty()) {
++            return;
++        }
++
++        if (!ASYNC_ITEM_CONVERSION) {
++            sendConvertedRenderPlan(session, conversionPlan);
++            return;
++        }
++
++        try {
++            conversionExecutor.execute(() -> sendConvertedRenderPlan(session, conversionPlan));
++        } catch (final RejectedExecutionException exception) {
++            if (available) {
++                owner.getLogger().log(Level.WARNING, "Failed to schedule async packet GUI item conversion", exception);
++            }
++            sendConvertedRenderPlan(session, conversionPlan);
++        }
++    }
++
++    private void sendConvertedRenderPlan(PacketGuiSession session, PacketGuiConversionPlan conversionPlan) {
++        if (!canConvertPlan(session, conversionPlan)) {
++            return;
++        }
++
++        try {
++            final List<PacketWrapper<?>> packets = new ArrayList<>();
++            for (final PacketGuiConversionOperation operation : conversionPlan.operations()) {
++                if (!canConvertPlan(session, conversionPlan)) {
++                    return;
++                }
++
++                if (!operation.addPackets(session, packets)) {
++                    return;
++                }
++            }
++
++            sendRenderPlan(session, new PacketGuiSendPlan(
++                    conversionPlan.user(),
++                    conversionPlan.windowId(),
++                    conversionPlan.generation(),
++                    packets));
++        } catch (final RuntimeException exception) {
++            owner.getLogger().log(Level.WARNING, "Failed to convert packet GUI items asynchronously", exception);
++            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
++        }
++    }
++
++    private boolean canConvertPlan(PacketGuiSession session, PacketGuiConversionPlan plan) {
++        return isTracked(session)
++                && !session.closeRequested()
++                && session.windowId() == plan.windowId()
++                && session.acceptsSendGeneration(plan.generation())
++                && ChannelHelper.isOpen(plan.channel());
 +    }
 +
 +    private void sendRenderPlan(PacketGuiSession session, PacketGuiSendPlan plan) {
@@ -1796,6 +2005,96 @@ index 0000000000000000000000000000000000000000..a3a25616a20726f4fe200c879ca8586a
 +            return null;
 +        } catch (final ReflectiveOperationException ignored) {
 +            return Boolean.FALSE;
++        }
++    }
++
++
++    private interface PacketGuiConversionOperation {
++
++        boolean addPackets(PacketGuiSession session, List<PacketWrapper<?>> packets);
++    }
++
++    private static final class PacketGuiConversionPlan {
++
++        private final User user;
++        private final Object channel;
++        private final int windowId;
++        private final long generation;
++        private final List<PacketGuiConversionOperation> operations = new ArrayList<>();
++
++        private PacketGuiConversionPlan(User user, int windowId, long generation) {
++            this.user = user;
++            this.channel = user.getChannel();
++            this.windowId = windowId;
++            this.generation = generation;
++        }
++
++        private void addOperation(PacketGuiConversionOperation operation) {
++            operations.add(operation);
++        }
++
++        private User user() {
++            return user;
++        }
++
++        private Object channel() {
++            return channel;
++        }
++
++        private int windowId() {
++            return windowId;
++        }
++
++        private long generation() {
++            return generation;
++        }
++
++        private List<PacketGuiConversionOperation> operations() {
++            return operations;
++        }
++
++        private boolean isEmpty() {
++            return operations.isEmpty();
++        }
++    }
++
++    private static final class PlayerInventorySnapshot {
++
++        private final ItemStack[] slots;
++        private final ItemStack cursor;
++
++        private PlayerInventorySnapshot(ItemStack[] slots, ItemStack cursor) {
++            this.slots = slots;
++            this.cursor = cursor;
++        }
++
++        private ItemStack item(int playerWindowSlot) {
++            if (playerWindowSlot < 0 || playerWindowSlot >= slots.length) {
++                return null;
++            }
++
++            return slots[playerWindowSlot];
++        }
++
++        private ItemStack cursor() {
++            return cursor;
++        }
++    }
++
++    private static final class PacketGuiThreadFactory implements ThreadFactory {
++
++        private final String name;
++        private final AtomicInteger threadId = new AtomicInteger(1);
++
++        private PacketGuiThreadFactory(String name) {
++            this.name = name;
++        }
++
++        @Override
++        public Thread newThread(Runnable runnable) {
++            final Thread thread = new Thread(runnable, name + " #" + threadId.getAndIncrement());
++            thread.setDaemon(true);
++            return thread;
 +        }
 +    }
 +
@@ -2288,10 +2587,10 @@ index 0000000000000000000000000000000000000000..838bd2a2606696d3dafc5430b179410b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..b52ac34974ca8b80d4ace58bd6cd92bba31910e4
+index 0000000000000000000000000000000000000000..385be48437ff8be5817055aa9a27f8a9c86d81cc
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,415 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
@@ -2419,7 +2718,7 @@ index 0000000000000000000000000000000000000000..b52ac34974ca8b80d4ace58bd6cd92bb
 +    }
 +
 +    synchronized boolean acceptsSendGeneration(long generation) {
-+        return generation > invalidatedSendGeneration;
++        return generation == sendGeneration && generation > invalidatedSendGeneration;
 +    }
 +
 +    synchronized boolean scheduleRender(
@@ -2459,18 +2758,42 @@ index 0000000000000000000000000000000000000000..b52ac34974ca8b80d4ace58bd6cd92bb
 +    }
 +
 +    synchronized com.github.retrooper.packetevents.protocol.item.ItemStack packetItem(PacketGuiRender render, int slot) {
++        final PacketItemSnapshot snapshot = packetItemSnapshot(render, slot);
++        if (snapshot.cached()) {
++            return snapshot.cachedPacketItem();
++        }
++
++        final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem =
++                PacketItemConverter.toPacket(snapshot.bukkitItem());
++        cachePacketItem(snapshot, packetItem);
++        return PacketItemConverter.copy(packetItem);
++    }
++
++    synchronized PacketItemSnapshot packetItemSnapshot(PacketGuiRender render, int slot) {
 +        ensureTopItemCache(render.size());
 +
 +        final ItemStack item = render.rawBukkitItem(slot);
 +        final CachedPacketItem cached = topItemCache[slot];
 +        if (cached != null && cached.matches(item)) {
-+            return PacketItemConverter.copy(cached.packetItem);
++            return PacketItemSnapshot.cached(render.size(), slot, cached.packetItem);
 +        }
 +
-+        final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem =
-+                PacketItemConverter.toPacket(item);
-+        topItemCache[slot] = new CachedPacketItem(item, packetItem);
-+        return PacketItemConverter.copy(packetItem);
++        return PacketItemSnapshot.uncached(render.size(), slot, item);
++    }
++
++    synchronized void cachePacketItem(
++            PacketItemSnapshot snapshot, com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
++        if (snapshot == null || snapshot.cached()) {
++            return;
++        }
++
++        ensureTopItemCache(snapshot.renderSize());
++        if (snapshot.slot() < 0 || snapshot.slot() >= topItemCache.length) {
++            return;
++        }
++
++        topItemCache[snapshot.slot()] =
++                new CachedPacketItem(snapshot.sourceReference(), snapshot.bukkitItem(), packetItem);
 +    }
 +
 +    synchronized void clearPacketItemCache() {
@@ -2579,6 +2902,72 @@ index 0000000000000000000000000000000000000000..b52ac34974ca8b80d4ace58bd6cd92bb
 +        }
 +    }
 +
++    static final class PacketItemSnapshot {
++
++        private final int renderSize;
++        private final int slot;
++        private final ItemStack sourceReference;
++        private final ItemStack bukkitItem;
++        private final boolean cached;
++        private final com.github.retrooper.packetevents.protocol.item.ItemStack cachedPacketItem;
++
++        private PacketItemSnapshot(
++                int renderSize,
++                int slot,
++                ItemStack sourceReference,
++                ItemStack bukkitItem,
++                boolean cached,
++                com.github.retrooper.packetevents.protocol.item.ItemStack cachedPacketItem) {
++            this.renderSize = renderSize;
++            this.slot = slot;
++            this.sourceReference = sourceReference;
++            this.bukkitItem = bukkitItem;
++            this.cached = cached;
++            this.cachedPacketItem = PacketItemConverter.copy(cachedPacketItem);
++        }
++
++        static PacketItemSnapshot cached(
++                int renderSize,
++                int slot,
++                com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
++            return new PacketItemSnapshot(renderSize, slot, null, null, true, packetItem);
++        }
++
++        static PacketItemSnapshot uncached(int renderSize, int slot, ItemStack item) {
++            return new PacketItemSnapshot(
++                    renderSize,
++                    slot,
++                    item,
++                    item == null ? null : item.clone(),
++                    false,
++                    com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY);
++        }
++
++        int renderSize() {
++            return renderSize;
++        }
++
++        int slot() {
++            return slot;
++        }
++
++        ItemStack sourceReference() {
++            return sourceReference;
++        }
++
++        ItemStack bukkitItem() {
++            return bukkitItem;
++        }
++
++        boolean cached() {
++            return cached;
++        }
++
++        com.github.retrooper.packetevents.protocol.item.ItemStack cachedPacketItem() {
++            return PacketItemConverter.copy(cachedPacketItem);
++        }
++    }
++
 +    private static final class CachedPacketItem {
 +
 +        private final ItemStack sourceReference;
@@ -2588,8 +2977,10 @@ index 0000000000000000000000000000000000000000..b52ac34974ca8b80d4ace58bd6cd92bb
 +        private final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem;
 +
 +        private CachedPacketItem(
-+                ItemStack bukkitItem, com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
-+            this.sourceReference = bukkitItem;
++                ItemStack sourceReference,
++                ItemStack bukkitItem,
++                com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
++            this.sourceReference = sourceReference;
 +            this.bukkitItem = bukkitItem == null ? null : bukkitItem.clone();
 +            this.type = PacketItemConverter.isEmpty(bukkitItem) ? Material.AIR : bukkitItem.getType();
 +            this.amount = PacketItemConverter.isEmpty(bukkitItem) ? 0 : bukkitItem.getAmount();
