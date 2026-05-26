@@ -1042,7 +1042,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            return;
 +        }
 +
-+        if (!click.isSafeTopPickup(session.container().getSize())) {
++        if (!click.isSafeTopClick(session.container().getSize())) {
 +            requestRender(session, false, true);
 +            return;
 +        }
@@ -1181,9 +1181,9 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +                click.clickIdentifier(),
 +                click.isLeftClick(),
 +                click.isRightClick(),
-+                false,
-+                false,
-+                false,
++                click.isMiddleClick(),
++                click.isShiftClick(),
++                click.isKeyboardClick(),
 +                false,
 +                false);
 +
@@ -1205,7 +1205,7 @@ index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f12
 +            return;
 +        }
 +
-+        requestRender(session, false, false);
++        requestRender(session, false, click.needsHardRepair());
 +    }
 +
 +    private void requestRender(PacketGuiSession session, boolean forceReopen, boolean hardResync) {
@@ -1472,12 +1472,14 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1a321b609
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,122 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
 +
 +final class PacketGuiClick {
++
++    private static final int OFFHAND_SWAP_BUTTON = 40;
 +
 +    private final int windowId;
 +    private final int slot;
@@ -1512,28 +1514,75 @@ index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1
 +        return button;
 +    }
 +
-+    boolean isSafeTopPickup(int topSize) {
-+        return clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP
-+                && slot >= 0
-+                && slot < topSize
-+                && (button == 0 || button == 1);
++    boolean isSafeTopClick(int topSize) {
++        if (slot < 0 || slot >= topSize) {
++            return false;
++        }
++
++        return isPickupClick() || isQuickMoveClick() || isSwapClick() || isCloneClick();
++    }
++
++    boolean needsHardRepair() {
++        return isQuickMoveClick() || isSwapClick() || isCloneClick();
 +    }
 +
 +    boolean isLeftClick() {
-+        return clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP && button == 0;
++        return (isPickupClick() || isQuickMoveClick()) && button == 0;
 +    }
 +
 +    boolean isRightClick() {
-+        return clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP && button == 1;
++        return (isPickupClick() || isQuickMoveClick()) && button == 1;
++    }
++
++    boolean isMiddleClick() {
++        return isCloneClick();
++    }
++
++    boolean isShiftClick() {
++        return isQuickMoveClick();
++    }
++
++    boolean isKeyboardClick() {
++        return isSwapClick();
 +    }
 +
 +    String clickIdentifier() {
-+        if (clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP) {
++        if (isPickupClick()) {
 +            if (button == 0) return "LEFT";
 +            if (button == 1) return "RIGHT";
 +        }
 +
++        if (isQuickMoveClick()) {
++            if (button == 0) return "SHIFT_LEFT";
++            if (button == 1) return "SHIFT_RIGHT";
++        }
++
++        if (isSwapClick()) {
++            return button == OFFHAND_SWAP_BUTTON ? "SWAP_OFFHAND" : "NUMBER_KEY";
++        }
++
++        if (isCloneClick()) {
++            return "MIDDLE";
++        }
++
 +        return clickType.name();
++    }
++
++    private boolean isPickupClick() {
++        return clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP && (button == 0 || button == 1);
++    }
++
++    private boolean isQuickMoveClick() {
++        return clickType == WrapperPlayClientClickWindow.WindowClickType.QUICK_MOVE && (button == 0 || button == 1);
++    }
++
++    private boolean isSwapClick() {
++        return clickType == WrapperPlayClientClickWindow.WindowClickType.SWAP
++                && ((button >= 0 && button <= 8) || button == OFFHAND_SWAP_BUTTON);
++    }
++
++    private boolean isCloneClick() {
++        return clickType == WrapperPlayClientClickWindow.WindowClickType.CLONE;
 +    }
 +
 +    @Override
