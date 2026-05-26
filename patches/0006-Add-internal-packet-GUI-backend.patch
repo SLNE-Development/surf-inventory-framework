@@ -1,56 +1,11 @@
-From 19839bbfac4bcfb77c789015346b65f8a65cb3b2 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Keviro <keviro@slne.dev>
 Date: Mon, 25 May 2026 23:04:19 +0200
 Subject: [PATCH] Add internal packet GUI backend
 
----
- gradle/libs.versions.toml                     |   7 +-
- .../build.gradle.kts                          |   4 +-
- .../inventoryframework/BukkitViewer.java      |   7 +-
- .../IFInventoryListener.java                  |  18 +
- .../inventoryframework/ViewFrame.java         |  10 +-
- .../context/BukkitSlotClickOrigin.java        |  89 +++
- .../context/CloseContext.java                 |   1 -
- .../context/PacketSlotClickOrigin.java        | 122 +++++
- .../context/RenderContext.java                |   8 +-
- .../context/SlotClickContext.java             |  61 ++-
- .../context/SlotClickOrigin.java              |  42 ++
- .../internal/BukkitElementFactory.java        |  18 +-
- .../internal/BukkitGuiBackend.java            |  20 +
- .../internal/GuiBackend.java                  |  34 ++
- .../internal/GuiBackendFactory.java           |  42 ++
- .../internal/packet/PacketGuiBackend.java     | 532 ++++++++++++++++++
- .../internal/packet/PacketGuiClick.java       |  73 +++
- .../packet/PacketGuiPacketListener.java       | 122 +++++
- .../internal/packet/PacketGuiRender.java      |  99 ++++
- .../internal/packet/PacketGuiSession.java     | 116 ++++
- .../packet/PacketInventoryConstants.java      |  39 ++
- .../internal/packet/PacketItemConverter.java  | 151 +++++
- .../internal/packet/PacketViewContainer.java  | 229 ++++++++
- .../packet/PacketViewerInventory.java         | 162 ++++++
- .../pipeline/GlobalClickInterceptor.java      |   4 +-
- .../pipeline/ItemClickInterceptor.java        |   5 +-
- .../pipeline/ItemCloseOnClickInterceptor.java |   5 +-
- settings.gradle.kts                           |   2 +
- 28 files changed, 1863 insertions(+), 45 deletions(-)
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
- create mode 100644 inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
 
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 89850fa8..daec84d3 100644
+index 89850fa8d67a4ff08fbe5997ab94625e50c0cf19..daec84d3a7722c8390ae6624b01b84d52c596df9 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
 @@ -14,6 +14,7 @@ plugin-spotless = "7.2.1"
@@ -79,7 +34,7 @@ index 89850fa8..daec84d3 100644
 \ No newline at end of file
 +publish = { id = "com.vanniktech.maven.publish.base", version = "0.34.0" }
 diff --git a/inventory-framework-platform-bukkit/build.gradle.kts b/inventory-framework-platform-bukkit/build.gradle.kts
-index 6a29127f..237bf07e 100644
+index 6a29127fffd904f31720719a40c8f61bf4c1ae05..237bf07ee139b580f0148a28061fb36166787247 100644
 --- a/inventory-framework-platform-bukkit/build.gradle.kts
 +++ b/inventory-framework-platform-bukkit/build.gradle.kts
 @@ -13,6 +13,7 @@ dependencies {
@@ -100,7 +55,7 @@ index 6a29127f..237bf07e 100644
 \ No newline at end of file
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
-index 16e47919..78c704d7 100644
+index 16e4791981a4fd159659190b2ac3e1a961e28e90..78c704d7457a6fe653346e5d100372922759105b 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/BukkitViewer.java
 @@ -52,7 +52,12 @@ public final class BukkitViewer implements Viewer {
@@ -118,7 +73,7 @@ index 16e47919..78c704d7 100644
  
      @Override
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
-index e7d2c7a0..199757af 100644
+index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954f050938e 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 @@ -5,6 +5,8 @@ import me.devnatan.inventoryframework.context.IFCloseContext;
@@ -178,7 +133,7 @@ index e7d2c7a0..199757af 100644
      public void onInventoryClick(final InventoryClickEvent event) {
          if (!(event.getWhoClicked() instanceof Player)) return;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/ViewFrame.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/ViewFrame.java
-index 2d97a162..4dc75f81 100644
+index 2d97a162afacb6aa9652d9d83079088761bbd35b..4dc75f811d1a888cee0851a70377ac76390d85a9 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/ViewFrame.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/ViewFrame.java
 @@ -14,6 +14,8 @@ import me.devnatan.inventoryframework.feature.DefaultFeatureInstaller;
@@ -230,7 +185,7 @@ index 2d97a162..4dc75f81 100644
      // region Internals
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
 new file mode 100644
-index 00000000..07639c5a
+index 0000000000000000000000000000000000000000..07639c5a46b064d0292e9f90ea9deb77559bdb38
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
 @@ -0,0 +1,89 @@
@@ -324,7 +279,7 @@ index 00000000..07639c5a
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
-index d73ddb29..686664b4 100644
+index d73ddb29859761e6505b001fb4d303f953cb99e3..686664b4211880e0dc7651cebda4e66cfef24245 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/CloseContext.java
 @@ -12,7 +12,6 @@ import me.devnatan.inventoryframework.state.State;
@@ -337,7 +292,7 @@ index d73ddb29..686664b4 100644
  import org.jetbrains.annotations.UnmodifiableView;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
 new file mode 100644
-index 00000000..74af4430
+index 0000000000000000000000000000000000000000..ad0d7f2d02291a259c44d206fd483b560e88e865
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
 @@ -0,0 +1,122 @@
@@ -464,7 +419,7 @@ index 00000000..74af4430
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
-index b89eae09..e1ccb7b9 100644
+index b89eae09cdfbbc5c01ef378071801f9add48af63..e1ccb7b9309017dbf69102f1511518247a66f85f 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
 @@ -169,6 +169,12 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
@@ -482,7 +437,7 @@ index b89eae09..e1ccb7b9 100644
      }
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
-index c0bb9419..21b66e39 100644
+index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..21b66e39189ed4eda8e09f31e03f3e2780c58cf0 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 @@ -5,11 +5,8 @@ import me.devnatan.inventoryframework.ViewContainer;
@@ -640,7 +595,7 @@ index c0bb9419..21b66e39 100644
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
 new file mode 100644
-index 00000000..7da19162
+index 0000000000000000000000000000000000000000..7da19162ef16eaac0d32ab89d90ebf26de350ce1
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
 @@ -0,0 +1,42 @@
@@ -687,7 +642,7 @@ index 00000000..7da19162
 +    void setCancelled(boolean cancelled);
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
-index 50f57dbc..f6dec24a 100644
+index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcacc1759436 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitElementFactory.java
 @@ -16,10 +16,6 @@ import me.devnatan.inventoryframework.context.*;
@@ -741,7 +696,7 @@ index 50f57dbc..f6dec24a 100644
  
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
 new file mode 100644
-index 00000000..d4e57da2
+index 0000000000000000000000000000000000000000..d4e57da254cdf676539e0ee3ab3862b7e7e27a5f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
 @@ -0,0 +1,20 @@
@@ -767,7 +722,7 @@ index 00000000..d4e57da2
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
 new file mode 100644
-index 00000000..b7efdbc7
+index 0000000000000000000000000000000000000000..b7efdbc7bce0e7f68d83abd93aeace52279326bb
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
 @@ -0,0 +1,34 @@
@@ -807,7 +762,7 @@ index 00000000..b7efdbc7
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
 new file mode 100644
-index 00000000..a490dc1a
+index 0000000000000000000000000000000000000000..a490dc1acbcb9ec3a7fdaafb36fce1b12d288005
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
 @@ -0,0 +1,42 @@
@@ -855,10 +810,10 @@ index 00000000..a490dc1a
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 00000000..1d617f3a
+index 0000000000000000000000000000000000000000..f4b2cf8806175f9dc964a2ac1db90f124a55707c
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,541 @@
+@@ -0,0 +1,653 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -868,6 +823,7 @@ index 00000000..1d617f3a
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCloseWindow;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenWindow;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetCursorItem;
++import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetSlot;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerWindowItems;
 +import java.lang.reflect.Method;
 +import java.util.ArrayList;
@@ -892,6 +848,7 @@ index 00000000..1d617f3a
 +import me.devnatan.inventoryframework.internal.GuiBackend;
 +import me.devnatan.inventoryframework.pipeline.StandardPipelinePhases;
 +import org.bukkit.Bukkit;
++import org.bukkit.entity.Entity;
 +import org.bukkit.entity.Player;
 +import org.bukkit.plugin.Plugin;
 +import org.jetbrains.annotations.NotNull;
@@ -1003,7 +960,7 @@ index 00000000..1d617f3a
 +    }
 +
 +    void open(@NotNull BukkitViewer viewer, @NotNull PacketViewContainer container) {
-+        if (!Bukkit.isPrimaryThread()) {
++        if (!isOnPlayerThread(viewer.getPlayer())) {
 +            runOnPlayer(viewer.getPlayer(), () -> open(viewer, container));
 +            return;
 +        }
@@ -1023,12 +980,11 @@ index 00000000..1d617f3a
 +        }
 +
 +        final PacketViewerInventory viewerInventory = inventoryFor(player.getUniqueId());
-+        viewerInventory.snapshotFrom(player);
 +
 +        final PacketGuiSession session =
 +                new PacketGuiSession(viewer, user, allocateWindowId(), container, viewerInventory);
 +        sessions.put(player.getUniqueId(), session);
-+        fullResync(session, true);
++        renderSession(session, true, true);
 +    }
 +
 +    void close(@NotNull PacketViewContainer container, boolean sendClosePacket) {
@@ -1050,14 +1006,11 @@ index 00000000..1d617f3a
 +
 +    void requestResync(@NotNull PacketViewContainer container) {
 +        for (final PacketGuiSession session : sessions.values()) {
-+            if (session.container() != container || !session.markResyncScheduled()) {
++            if (session.container() != container) {
 +                continue;
 +            }
 +
-+            runOnPlayer(session.player(), () -> {
-+                session.clearResyncScheduled();
-+                fullResync(session, false);
-+            });
++            requestRender(session, false, false);
 +        }
 +    }
 +
@@ -1067,7 +1020,7 @@ index 00000000..1d617f3a
 +            return;
 +        }
 +
-+        runOnPlayer(session.player(), () -> fullResync(session, true));
++        requestRender(session, true, true);
 +    }
 +
 +    boolean isGuiWindow(User user, int windowId) {
@@ -1090,7 +1043,7 @@ index 00000000..1d617f3a
 +        }
 +
 +        if (!click.isSafeTopPickup(session.container().getSize())) {
-+            runOnPlayer(session.player(), () -> fullResync(session, false));
++            requestRender(session, false, true);
 +            return;
 +        }
 +
@@ -1132,9 +1085,9 @@ index 00000000..1d617f3a
 +
 +        final PacketGuiSession session = sessions.get(user.getUUID());
 +        if (isTracked(session)) {
-+            if (windowId != session.windowId()) {
-+                closeSession(session, true, CLOSE_ORIGIN_SERVER, true);
-+            }
++            runOnPlayer(
++                    session.player(),
++                    () -> closeSession(session, windowId != session.windowId(), CLOSE_ORIGIN_SERVER, true));
 +            return;
 +        }
 +
@@ -1252,30 +1205,55 @@ index 00000000..1d617f3a
 +            return;
 +        }
 +
-+        fullResync(session, false);
++        requestRender(session, false, false);
 +    }
 +
-+    private void fullResync(PacketGuiSession session, boolean forceReopen) {
-+        if (!Bukkit.isPrimaryThread()) {
-+            runOnPlayer(session.player(), () -> fullResync(session, forceReopen));
++    private void requestRender(PacketGuiSession session, boolean forceReopen, boolean hardResync) {
++        if (!isTracked(session) || session.closeRequested()) {
 +            return;
 +        }
 +
-+        if (!isTracked(session)) {
++        if (!session.scheduleRender(forceReopen, hardResync)) {
 +            return;
 +        }
 +
-+        session.viewerInventory().snapshotFrom(session.player());
++        runOnPlayerNextTick(session.player(), () -> {
++            final PacketGuiSession.RenderRequest request = session.consumeRenderRequest();
++            renderSession(session, request.forceReopen(), request.hardResync());
++        });
++    }
++
++    private void renderSession(PacketGuiSession session, boolean forceReopen, boolean hardResync) {
++        if (!isOnPlayerThread(session.player())) {
++            runOnPlayer(session.player(), () -> renderSession(session, forceReopen, hardResync));
++            return;
++        }
++
++        if (!isTracked(session) || session.closeRequested()) {
++            return;
++        }
++
 +        final PacketGuiRender render = PacketGuiRender.from(session.container(), session.viewer().getId());
 +        final PacketGuiRender previous = session.appliedRender();
 +        session.currentRender(render);
++        final boolean reopen = forceReopen || !render.sameWindow(previous);
++        final boolean sendFullWindow = hardResync || reopen || previous == null;
 +
 +        try {
-+            if (forceReopen || !render.sameWindow(previous)) {
++            if (sendFullWindow) {
++                session.viewerInventory().snapshotFrom(session.player());
++            }
++
++            if (reopen) {
 +                sendOpenWindow(session, render);
 +            }
 +
-+            sendWindowItems(session, render);
++            if (sendFullWindow) {
++                sendWindowItems(session, render);
++            } else {
++                sendChangedTopSlots(session, previous, render);
++            }
++
 +            sendCursor(session);
 +            session.appliedRender(render);
 +        } catch (final RuntimeException exception) {
@@ -1300,7 +1278,9 @@ index 00000000..1d617f3a
 +    private void sendWindowItems(PacketGuiSession session, PacketGuiRender render) {
 +        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items =
 +                new ArrayList<>(render.size() + 36);
-+        items.addAll(render.packetTopItems());
++        for (int slot = 0; slot < render.size(); slot++) {
++            items.add(session.packetItem(render, slot));
++        }
 +        items.addAll(session.viewerInventory().mainAndHotbarItems());
 +
 +        session.user()
@@ -1309,6 +1289,26 @@ index 00000000..1d617f3a
 +                        session.nextStateId(),
 +                        items,
 +                        session.viewerInventory().cursor()));
++    }
++
++    private void sendChangedTopSlots(PacketGuiSession session, PacketGuiRender previous, PacketGuiRender render) {
++        int stateId = -1;
++        for (int slot = 0; slot < render.size(); slot++) {
++            if (render.sameTopItem(previous, slot)) {
++                continue;
++            }
++
++            if (stateId < 0) {
++                stateId = session.nextStateId();
++            }
++
++            session.user()
++                    .sendPacket(new WrapperPlayServerSetSlot(
++                            session.windowId(),
++                            stateId,
++                            slot,
++                            session.packetItem(render, slot)));
++        }
 +    }
 +
 +    private void sendCursor(PacketGuiSession session) {
@@ -1320,6 +1320,11 @@ index 00000000..1d617f3a
 +            return false;
 +        }
 +
++        if (!isOnPlayerThread(session.player()) && (sendClosePacket || callClose)) {
++            runOnPlayer(session.player(), () -> closeSession(session, sendClosePacket, origin, callClose));
++            return true;
++        }
++
 +        synchronized (session) {
 +            if (session.closed()) {
 +                return false;
@@ -1329,7 +1334,8 @@ index 00000000..1d617f3a
 +        }
 +
 +        sessions.remove(session.viewerId(), session);
-+        session.viewerInventory().closeWindow(session.windowId());
++        session.clearPacketItemCache();
++        session.viewerInventory().resetOpenWindow();
 +        if (sendClosePacket) {
 +            try {
 +                sendCursor(session);
@@ -1339,7 +1345,9 @@ index 00000000..1d617f3a
 +            }
 +        }
 +
-+        session.player().updateInventory();
++        if (sendClosePacket || callClose) {
++            session.player().updateInventory();
++        }
 +        if (callClose) {
 +            executeClosePipeline(session, origin);
 +        }
@@ -1373,7 +1381,7 @@ index 00000000..1d617f3a
 +    }
 +
 +    private void runOnPlayer(Player player, Runnable task) {
-+        if (Bukkit.isPrimaryThread()) {
++        if (isOnPlayerThread(player)) {
 +            task.run();
 +            return;
 +        }
@@ -1385,24 +1393,83 @@ index 00000000..1d617f3a
 +        Bukkit.getScheduler().runTask(owner, task);
 +    }
 +
++    private void runOnPlayerNextTick(Player player, Runnable task) {
++        if (tryRunEntitySchedulerDelayed(player, task)) {
++            return;
++        }
++
++        Bukkit.getScheduler().runTask(owner, task);
++    }
++
 +    private boolean tryRunEntityScheduler(Player player, Runnable task) {
++        final Object scheduler;
 +        try {
 +            final Method getScheduler = player.getClass().getMethod("getScheduler");
-+            final Object scheduler = getScheduler.invoke(player);
++            scheduler = getScheduler.invoke(player);
++        } catch (final NoSuchMethodException ignored) {
++            return false;
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to access packet GUI player scheduler", exception);
++        }
++
++        try {
 +            final Method run = scheduler.getClass().getMethod("run", Plugin.class, Consumer.class, Runnable.class);
 +            final Consumer<Object> scheduledTaskConsumer = ignored -> task.run();
 +            run.invoke(scheduler, owner, scheduledTaskConsumer, null);
 +            return true;
 +        } catch (final NoSuchMethodException ignored) {
-+            return false;
++            throw new IllegalStateException("Player scheduler does not expose a run method");
 +        } catch (final ReflectiveOperationException exception) {
 +            throw new IllegalStateException("Failed to schedule packet GUI task on the player scheduler", exception);
++        }
++    }
++
++    private boolean tryRunEntitySchedulerDelayed(Player player, Runnable task) {
++        final Object scheduler;
++        try {
++            final Method getScheduler = player.getClass().getMethod("getScheduler");
++            scheduler = getScheduler.invoke(player);
++        } catch (final NoSuchMethodException ignored) {
++            return false;
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to access packet GUI player scheduler", exception);
++        }
++
++        try {
++            final Method runDelayed =
++                    scheduler.getClass().getMethod("runDelayed", Plugin.class, Consumer.class, Runnable.class, long.class);
++            final Consumer<Object> scheduledTaskConsumer = ignored -> task.run();
++            runDelayed.invoke(scheduler, owner, scheduledTaskConsumer, null, 1L);
++            return true;
++        } catch (final NoSuchMethodException ignored) {
++            return tryRunEntityScheduler(player, task);
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to schedule packet GUI task on the player scheduler", exception);
++        }
++    }
++
++    private boolean isOnPlayerThread(Player player) {
++        if (isOwnedByCurrentRegion(player)) {
++            return true;
++        }
++
++        return Bukkit.isPrimaryThread();
++    }
++
++    private boolean isOwnedByCurrentRegion(Player player) {
++        try {
++            final Method method = Bukkit.class.getMethod("isOwnedByCurrentRegion", Entity.class);
++            return Boolean.TRUE.equals(method.invoke(null, player));
++        } catch (final NoSuchMethodException ignored) {
++            return false;
++        } catch (final ReflectiveOperationException ignored) {
++            return false;
 +        }
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
-index 00000000..ba07a12d
+index 0000000000000000000000000000000000000000..ba07a12d669675a549169f91e5c53db1a321b609
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 @@ -0,0 +1,73 @@
@@ -1481,7 +1548,7 @@ index 00000000..ba07a12d
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
-index 00000000..b10d5a0e
+index 0000000000000000000000000000000000000000..89cf420ff84c58826d06cbe9d92c4f9b3f074d03
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 @@ -0,0 +1,122 @@
@@ -1609,15 +1676,13 @@ index 00000000..b10d5a0e
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
 new file mode 100644
-index 00000000..8d6fd461
+index 0000000000000000000000000000000000000000..1e4d3441f44b118c75ab62bf24e846c68a30d955
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,103 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
-+import java.util.ArrayList;
 +import java.util.Arrays;
-+import java.util.List;
 +import java.util.Objects;
 +import net.kyori.adventure.text.Component;
 +import org.bukkit.inventory.ItemStack;
@@ -1638,18 +1703,20 @@ index 00000000..8d6fd461
 +
 +    static PacketGuiRender from(PacketViewContainer container) {
 +        final ItemStack[] topItems = container.snapshotItems();
++        final Object rawTitle = container.getRawTitle(null);
 +        return new PacketGuiRender(
-+                container.getRawTitle(null),
-+                titleComponent(container.getRawTitle(null)),
++                rawTitle,
++                titleComponent(rawTitle),
 +                Math.max(1, container.getRowsCount()),
 +                topItems);
 +    }
 +
 +    static PacketGuiRender from(PacketViewContainer container, String viewerId) {
 +        final ItemStack[] topItems = container.snapshotItems();
++        final Object rawTitle = container.getRawTitle(viewerId);
 +        return new PacketGuiRender(
-+                container.getRawTitle(viewerId),
-+                titleComponent(container.getRawTitle(viewerId)),
++                rawTitle,
++                titleComponent(rawTitle),
 +                Math.max(1, container.getRowsCount()),
 +                topItems);
 +    }
@@ -1671,16 +1738,20 @@ index 00000000..8d6fd461
 +        return item == null ? null : item.clone();
 +    }
 +
-+    List<com.github.retrooper.packetevents.protocol.item.ItemStack> packetTopItems() {
-+        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items = new ArrayList<>(topItems.length);
-+        for (final ItemStack item : topItems) {
-+            items.add(PacketItemConverter.toPacket(item));
-+        }
-+        return items;
++    ItemStack rawBukkitItem(int slot) {
++        return topItems[slot];
 +    }
 +
 +    boolean sameWindow(PacketGuiRender other) {
 +        return other != null && rows == other.rows && Objects.equals(rawTitle, other.rawTitle);
++    }
++
++    boolean sameTopItem(PacketGuiRender other, int slot) {
++        return other != null
++                && slot >= 0
++                && slot < topItems.length
++                && slot < other.topItems.length
++                && PacketItemConverter.sameDisplayItem(topItems[slot], other.topItems[slot]);
 +    }
 +
 +    @Override
@@ -1714,18 +1785,18 @@ index 00000000..8d6fd461
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 00000000..c70570ac
+index 0000000000000000000000000000000000000000..8994528f01d429b9959282dbed029caabb2a02a4
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,195 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
 +import java.util.UUID;
-+import java.util.concurrent.atomic.AtomicBoolean;
 +import me.devnatan.inventoryframework.BukkitViewer;
 +import me.devnatan.inventoryframework.context.IFRenderContext;
 +import org.bukkit.entity.Player;
++import org.bukkit.inventory.ItemStack;
 +
 +final class PacketGuiSession {
 +
@@ -1736,9 +1807,12 @@ index 00000000..c70570ac
 +    private final int windowId;
 +    private final PacketViewContainer container;
 +    private final PacketViewerInventory viewerInventory;
-+    private final AtomicBoolean resyncScheduled = new AtomicBoolean();
++    private CachedPacketItem[] topItemCache = new CachedPacketItem[0];
 +    private PacketGuiRender currentRender;
 +    private PacketGuiRender appliedRender;
++    private boolean renderScheduled;
++    private boolean scheduledForceReopen;
++    private boolean scheduledHardResync;
 +    private boolean closed;
 +    private boolean closeRequested;
 +    private int stateId = 1;
@@ -1826,17 +1900,93 @@ index 00000000..c70570ac
 +        return stateId++;
 +    }
 +
-+    boolean markResyncScheduled() {
-+        return resyncScheduled.compareAndSet(false, true);
++    synchronized boolean scheduleRender(boolean forceReopen, boolean hardResync) {
++        scheduledForceReopen |= forceReopen;
++        scheduledHardResync |= hardResync;
++        if (renderScheduled) {
++            return false;
++        }
++
++        renderScheduled = true;
++        return true;
 +    }
 +
-+    void clearResyncScheduled() {
-+        resyncScheduled.set(false);
++    synchronized RenderRequest consumeRenderRequest() {
++        final RenderRequest request = new RenderRequest(scheduledForceReopen, scheduledHardResync);
++        renderScheduled = false;
++        scheduledForceReopen = false;
++        scheduledHardResync = false;
++        return request;
++    }
++
++    synchronized com.github.retrooper.packetevents.protocol.item.ItemStack packetItem(PacketGuiRender render, int slot) {
++        ensureTopItemCache(render.size());
++
++        final ItemStack item = render.rawBukkitItem(slot);
++        final int fingerprint = PacketItemConverter.displayFingerprint(item);
++        final CachedPacketItem cached = topItemCache[slot];
++        if (cached != null && cached.matches(item, fingerprint)) {
++            return PacketItemConverter.copy(cached.packetItem);
++        }
++
++        final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem =
++                PacketItemConverter.toPacket(item);
++        topItemCache[slot] = new CachedPacketItem(item, fingerprint, packetItem);
++        return PacketItemConverter.copy(packetItem);
++    }
++
++    synchronized void clearPacketItemCache() {
++        topItemCache = new CachedPacketItem[0];
++    }
++
++    private void ensureTopItemCache(int size) {
++        if (topItemCache.length != size) {
++            topItemCache = new CachedPacketItem[size];
++        }
++    }
++
++    static final class RenderRequest {
++
++        private final boolean forceReopen;
++        private final boolean hardResync;
++
++        private RenderRequest(boolean forceReopen, boolean hardResync) {
++            this.forceReopen = forceReopen;
++            this.hardResync = hardResync;
++        }
++
++        boolean forceReopen() {
++            return forceReopen;
++        }
++
++        boolean hardResync() {
++            return hardResync;
++        }
++    }
++
++    private static final class CachedPacketItem {
++
++        private final ItemStack bukkitItem;
++        private final int fingerprint;
++        private final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem;
++
++        private CachedPacketItem(
++                ItemStack bukkitItem,
++                int fingerprint,
++                com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
++            this.bukkitItem = bukkitItem == null ? null : bukkitItem.clone();
++            this.fingerprint = fingerprint;
++            this.packetItem = PacketItemConverter.copy(packetItem);
++        }
++
++        private boolean matches(ItemStack item, int fingerprint) {
++            return this.fingerprint == fingerprint && PacketItemConverter.sameDisplayItem(bukkitItem, item);
++        }
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
 new file mode 100644
-index 00000000..aa6ab4ab
+index 0000000000000000000000000000000000000000..aa6ab4aba33324a21bab6f7707532550c222af1a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
 @@ -0,0 +1,39 @@
@@ -1881,10 +2031,10 @@ index 00000000..aa6ab4ab
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
 new file mode 100644
-index 00000000..bccc4cfc
+index 0000000000000000000000000000000000000000..03db18d4012fb02b485f06b365778835861a43e4
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,216 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import io.github.retrooper.packetevents.util.SpigotConversionUtil;
@@ -1899,10 +2049,15 @@ index 00000000..bccc4cfc
 +
 +final class PacketItemConverter {
 +
++    private static final Method DISPLAY_NAME_GETTER = itemMetaMethod("displayName");
++    private static final Method DISPLAY_NAME_SETTER = itemMetaMethod("displayName", Component.class);
++    private static final Method LORE_GETTER = itemMetaMethod("lore");
++    private static final Method LORE_SETTER = itemMetaMethod("lore", List.class);
++
 +    private PacketItemConverter() {}
 +
 +    static com.github.retrooper.packetevents.protocol.item.ItemStack toPacket(ItemStack item) {
-+        if (item == null || item.getType() == Material.AIR) {
++        if (isEmpty(item)) {
 +            return com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY;
 +        }
 +
@@ -1926,6 +2081,26 @@ index 00000000..bccc4cfc
 +        return item == null || item.isEmpty()
 +                ? com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY
 +                : item.copy();
++    }
++
++    static boolean sameDisplayItem(ItemStack first, ItemStack second) {
++        if (isEmpty(first) && isEmpty(second)) {
++            return true;
++        }
++
++        if (isEmpty(first) || isEmpty(second)) {
++            return false;
++        }
++
++        return first.equals(second);
++    }
++
++    static int displayFingerprint(ItemStack item) {
++        return isEmpty(item) ? 0 : item.hashCode();
++    }
++
++    static boolean isEmpty(ItemStack item) {
++        return item == null || item.getType() == Material.AIR || item.getAmount() <= 0;
 +    }
 +
 +    private static ItemStack normalizeItem(ItemStack item) {
@@ -2000,12 +2175,8 @@ index 00000000..bccc4cfc
 +    }
 +
 +    private static Object invokeItemMetaGetter(ItemMeta meta, String methodName) {
-+        try {
-+            final Method method = ItemMeta.class.getMethod(methodName);
-+            return method.invoke(meta);
-+        } catch (final ReflectiveOperationException ignored) {
-+            return null;
-+        }
++        final Method method = getter(methodName);
++        return method == null ? null : invoke(method, meta);
 +    }
 +
 +    private static boolean invokeItemMetaSetter(
@@ -2013,12 +2184,56 @@ index 00000000..bccc4cfc
 +            String methodName,
 +            Class<?> parameterType,
 +            Object value) {
++        final Method method = setter(methodName, parameterType);
++        if (method == null) {
++            return false;
++        }
++
 +        try {
-+            final Method method = ItemMeta.class.getMethod(methodName, parameterType);
 +            method.invoke(meta, value);
 +            return true;
 +        } catch (final ReflectiveOperationException ignored) {
 +            return false;
++        }
++    }
++
++    private static Method getter(String methodName) {
++        if ("displayName".equals(methodName)) {
++            return DISPLAY_NAME_GETTER;
++        }
++
++        if ("lore".equals(methodName)) {
++            return LORE_GETTER;
++        }
++
++        return null;
++    }
++
++    private static Method setter(String methodName, Class<?> parameterType) {
++        if ("displayName".equals(methodName) && Component.class.equals(parameterType)) {
++            return DISPLAY_NAME_SETTER;
++        }
++
++        if ("lore".equals(methodName) && List.class.equals(parameterType)) {
++            return LORE_SETTER;
++        }
++
++        return null;
++    }
++
++    private static Object invoke(Method method, ItemMeta meta, Object... arguments) {
++        try {
++            return method.invoke(meta, arguments);
++        } catch (final ReflectiveOperationException ignored) {
++            return null;
++        }
++    }
++
++    private static Method itemMetaMethod(String methodName, Class<?>... parameterTypes) {
++        try {
++            return ItemMeta.class.getMethod(methodName, parameterTypes);
++        } catch (final NoSuchMethodException ignored) {
++            return null;
 +        }
 +    }
 +
@@ -2036,16 +2251,14 @@ index 00000000..bccc4cfc
 +        return normalized.children(normalizedChildren);
 +    }
 +}
-
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
 new file mode 100644
-index 00000000..8e578b11
+index 0000000000000000000000000000000000000000..c67b05644fd4a7e5063780d6f2cbcaef65fb29ca
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,248 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
-+import java.util.Arrays;
 +import java.util.Map;
 +import java.util.Objects;
 +import java.util.concurrent.ConcurrentHashMap;
@@ -2146,26 +2359,39 @@ index 00000000..8e578b11
 +    @Override
 +    public void renderItem(int slot, Object item) {
 +        requireSupportedItem(item);
++        final boolean changed;
 +        synchronized (topItems) {
 +            if (slot < 0 || slot >= topItems.length) {
 +                throw new IndexOutOfBoundsException(
 +                        "Slot out of bounds: " + slot + " (size=" + topItems.length + ")");
 +            }
-+            topItems[slot] = item == null ? null : ((ItemStack) item).clone();
++            final ItemStack nextItem = item == null ? null : ((ItemStack) item).clone();
++            changed = !PacketItemConverter.sameDisplayItem(topItems[slot], nextItem);
++            if (changed) {
++                topItems[slot] = nextItem;
++            }
 +        }
-+        backend.requestResync(this);
++        if (changed) {
++            backend.requestResync(this);
++        }
 +    }
 +
 +    @Override
 +    public void removeItem(int slot) {
++        final boolean changed;
 +        synchronized (topItems) {
 +            if (slot < 0 || slot >= topItems.length) {
 +                throw new IndexOutOfBoundsException(
 +                        "Slot out of bounds: " + slot + " (size=" + topItems.length + ")");
 +            }
-+            topItems[slot] = null;
++            changed = !PacketItemConverter.isEmpty(topItems[slot]);
++            if (changed) {
++                topItems[slot] = null;
++            }
 +        }
-+        backend.requestResync(this);
++        if (changed) {
++            backend.requestResync(this);
++        }
 +    }
 +
 +    @Override
@@ -2219,16 +2445,23 @@ index 00000000..8e578b11
 +
 +    @Override
 +    public void changeTitle(@Nullable Object title, @NotNull Viewer target) {
++        final Object previous = getRawTitle(target.getId());
 +        if (title == null) {
 +            viewerTitles.remove(target.getId());
 +        } else {
 +            viewerTitles.put(target.getId(), title);
 +        }
 +
-+        backend.requestReopen(this, (BukkitViewer) target);
++        if (!Objects.equals(previous, getRawTitle(target.getId()))) {
++            backend.requestReopen(this, (BukkitViewer) target);
++        }
 +    }
 +
 +    void changeBaseTitle(@Nullable Object title) {
++        if (Objects.equals(this.title, title)) {
++            return;
++        }
++
 +        this.title = title;
 +        backend.requestResync(this);
 +    }
@@ -2274,10 +2507,10 @@ index 00000000..8e578b11
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
 new file mode 100644
-index 00000000..19a018d5
+index 0000000000000000000000000000000000000000..fc2ec585cbb708f5c6ebff72c7c1b0000b987a31
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,163 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.ArrayList;
@@ -2400,6 +2633,11 @@ index 00000000..19a018d5
 +        }
 +    }
 +
++    synchronized void resetOpenWindow() {
++        openWindowId = PacketInventoryConstants.PLAYER_WINDOW_ID;
++        openWindowTopSize = PacketInventoryConstants.INVENTORY_SIZE;
++    }
++
 +    synchronized int mapContainerSlotToPlayerSlot(int windowId, int containerSlot) {
 +        if (windowId == PacketInventoryConstants.PLAYER_WINDOW_ID) {
 +            return containerSlot;
@@ -2435,13 +2673,9 @@ index 00000000..19a018d5
 +        }
 +    }
 +
-+    private void resetOpenWindow() {
-+        openWindowId = PacketInventoryConstants.PLAYER_WINDOW_ID;
-+        openWindowTopSize = PacketInventoryConstants.INVENTORY_SIZE;
-+    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
-index ec3bd553..b5888370 100644
+index ec3bd553181923362bece51aff5fec6983a8a52f..b5888370d5c9703c7487d4312df7e9c989e3940d 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
 @@ -4,7 +4,6 @@ import static me.devnatan.inventoryframework.ViewConfig.CANCEL_ON_CLICK;
@@ -2465,7 +2699,7 @@ index ec3bd553..b5888370 100644
      }
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java
-index db6b8c48..4047e6e7 100644
+index db6b8c48c4c406e78aa84d3af4a15d0421ff53b0..4047e6e71b9e3086810236355f64e7354124358c 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java
 @@ -4,8 +4,6 @@ import me.devnatan.inventoryframework.VirtualView;
@@ -2488,7 +2722,7 @@ index db6b8c48..4047e6e7 100644
          final Component component = context.getComponent();
          if (component == null) return;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java
-index 6499f339..3f89ed26 100644
+index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc277826751542281e 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemCloseOnClickInterceptor.java
 @@ -4,8 +4,6 @@ import me.devnatan.inventoryframework.VirtualView;
@@ -2511,7 +2745,7 @@ index 6499f339..3f89ed26 100644
          final Component component = context.getComponent();
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
 diff --git a/settings.gradle.kts b/settings.gradle.kts
-index 05585a2b..f26ceb55 100644
+index 05585a2bd587532365bfe98563ecc18047386144..f26ceb55f94d93d4eaf30706bf82998bab48f278 100644
 --- a/settings.gradle.kts
 +++ b/settings.gradle.kts
 @@ -10,6 +10,8 @@ dependencyResolutionManagement {
@@ -2523,6 +2757,3 @@ index 05585a2b..f26ceb55 100644
      }
  }
  
--- 
-2.50.1.windows.1
-
