@@ -872,10 +872,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..34e42f25c77bce6eba4fd543e071c9f8a4ed8faa
+index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334093ac860
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1263 @@
+@@ -0,0 +1,1272 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1141,12 +1141,17 @@ index 0000000000000000000000000000000000000000..34e42f25c77bce6eba4fd543e071c9f8
 +        }
 +
 +        final PacketGuiRepairScope repairScope = click.repairScope(session.container().getSize());
++        if (click.isOutsideClick()) {
++            runOnPlayer(session.player(), () -> handlePacketClick(session, click, repairScope));
++            return;
++        }
++
 +        if (repairScope.fullWindow()) {
 +            requestRender(session, false, true);
 +            return;
 +        }
 +
-+        runOnPlayer(session.player(), () -> handleSafeTopClick(session, click, repairScope));
++        runOnPlayer(session.player(), () -> handlePacketClick(session, click, repairScope));
 +    }
 +
 +    void handleWindowClose(User user, int windowId) {
@@ -1349,21 +1354,25 @@ index 0000000000000000000000000000000000000000..34e42f25c77bce6eba4fd543e071c9f8
 +        inventoryFor(user.getUUID()).applyCursor(item);
 +    }
 +
-+    private void handleSafeTopClick(
++    private void handlePacketClick(
 +            PacketGuiSession session, PacketGuiClick click, PacketGuiRepairScope repairScope) {
 +        if (!isTracked(session)) {
 +            return;
 +        }
 +
 +        final IFRenderContext context = session.context();
-+        final Component clickedComponent = context.getComponentsAt(click.slot()).stream()
-+                .filter(Component::isVisible)
-+                .findFirst()
-+                .orElse(null);
++        final boolean outsideClick = click.isOutsideClick();
++        final Component clickedComponent = outsideClick
++                ? null
++                : context.getComponentsAt(click.slot()).stream()
++                        .filter(Component::isVisible)
++                        .findFirst()
++                        .orElse(null);
++        final ItemStack currentItem = outsideClick ? null : session.container().item(click.slot());
 +
 +        final PacketSlotClickOrigin origin = new PacketSlotClickOrigin(
 +                session.player(),
-+                session.container().item(click.slot()),
++                currentItem,
 +                click,
 +                click.slot(),
 +                click.clickIdentifier(),
@@ -1372,7 +1381,7 @@ index 0000000000000000000000000000000000000000..34e42f25c77bce6eba4fd543e071c9f8
 +                click.isMiddleClick(),
 +                click.isShiftClick(),
 +                click.isKeyboardClick(),
-+                false,
++                outsideClick,
 +                false);
 +
 +        try {
@@ -2141,10 +2150,10 @@ index 0000000000000000000000000000000000000000..34e42f25c77bce6eba4fd543e071c9f8
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..bc0bf258f523442060af97569fe76518dd51364e
+index 0000000000000000000000000000000000000000..dfcd9d0b454ab265c9dba997646ddd91a2e80374
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,192 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
@@ -2197,6 +2206,10 @@ index 0000000000000000000000000000000000000000..bc0bf258f523442060af97569fe76518
 +
 +    int[] changedSlots() {
 +        return changedSlots;
++    }
++
++    boolean isOutsideClick() {
++        return slot < 0;
 +    }
 +
 +    boolean isSafeTopClick(int topSize) {
