@@ -872,10 +872,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334093ac860
+index 0000000000000000000000000000000000000000..c8fb4d405218d628147e60bfe81350767232de6a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1272 @@
+@@ -0,0 +1,1209 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -883,22 +883,14 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +import com.github.retrooper.packetevents.manager.server.ServerVersion;
 +import com.github.retrooper.packetevents.netty.channel.ChannelHelper;
 +import com.github.retrooper.packetevents.protocol.player.User;
-+import com.github.retrooper.packetevents.wrapper.PacketWrapper;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCloseWindow;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenWindow;
-+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetCursorItem;
-+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetSlot;
-+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerWindowItems;
 +import java.lang.reflect.Method;
 +import java.util.ArrayList;
 +import java.util.List;
 +import java.util.UUID;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.concurrent.ConcurrentMap;
-+import java.util.concurrent.ExecutorService;
-+import java.util.concurrent.Executors;
-+import java.util.concurrent.RejectedExecutionException;
-+import java.util.concurrent.ThreadFactory;
 +import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.logging.Level;
 +import java.util.function.Consumer;
@@ -925,11 +917,6 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +
 +public final class PacketGuiBackend implements GuiBackend {
 +
-+    private static final boolean ASYNC_PACKET_SEND =
-+            Boolean.parseBoolean(System.getProperty("me.devnatan.inventoryframework.packet.async-send", "true"));
-+    private static final boolean ASYNC_ITEM_CONVERSION = Boolean.parseBoolean(
-+            System.getProperty("me.devnatan.inventoryframework.packet.async-conversion", "true"));
-+    private static final int ASYNC_ITEM_CONVERSION_THREADS = 2;
 +    private static final int MAX_WINDOW_ID = 127;
 +    private static final String CLOSE_ORIGIN_CLIENT = "packet-gui-client-close";
 +    private static final String CLOSE_ORIGIN_SERVER = "packet-gui-server-close";
@@ -942,16 +929,13 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +    private final ConcurrentMap<UUID, PacketGuiSession> sessions = new ConcurrentHashMap<>();
 +    private final ConcurrentMap<UUID, PacketViewerInventory> viewerInventories = new ConcurrentHashMap<>();
 +    private final AtomicInteger nextWindowId = new AtomicInteger(1);
-+    private final ExecutorService conversionExecutor;
++    private PacketGuiNativeOutboundSender nativeOutbound;
 +    private PacketListenerCommon listener;
 +    private volatile boolean available = true;
 +
 +    public PacketGuiBackend(@NotNull Plugin owner, @NotNull BukkitGuiBackend fallbackBackend) {
 +        this.owner = owner;
 +        this.fallbackBackend = fallbackBackend;
-+        this.conversionExecutor = Executors.newFixedThreadPool(
-+                ASYNC_ITEM_CONVERSION_THREADS,
-+                new PacketGuiThreadFactory("IF Packet GUI Item Converter"));
 +    }
 +
 +    @Override
@@ -988,23 +972,40 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +                return;
 +            }
 +
++            final PacketGuiNativeOutboundSender.InitializationResult nativeSender =
++                    PacketGuiNativeOutboundSender.initialize();
++            owner.getLogger()
++                    .info("[IF] GUI backend: Native packet GUI probe detected Minecraft "
++                            + nativeSender.minecraftVersion()
++                            + " (Bukkit "
++                            + nativeSender.bukkitVersion()
++                            + ", server package "
++                            + nativeSender.serverPackage()
++                            + ", PacketEvents "
++                            + PacketEvents.getAPI().getServerManager().getVersion()
++                            + ").");
++
++            if (!nativeSender.available()) {
++                available = false;
++                owner.getLogger()
++                        .warning("[IF] GUI backend: Bukkit fallback enabled. "
++                                + "Packet mode was requested, but the native packet GUI outbound sender is unavailable. "
++                                + nativeSender.message()
++                                + " Inventory GUIs use real Bukkit inventory items.");
++                if (nativeSender.failure() != null) {
++                    owner.getLogger()
++                            .log(Level.WARNING, "[IF] Native packet GUI outbound sender self-check failed.", nativeSender.failure());
++                }
++                return;
++            }
++
++            nativeOutbound = nativeSender.sender();
 +            listener = PacketEvents.getAPI().getEventManager().registerListener(new PacketGuiPacketListener(this));
 +            owner.getLogger()
 +                    .info("[IF] GUI backend: Packet mode enabled. Inventory GUIs are rendered with fake packet items. "
-+                            + "This is the recommended mode for preventing GUI item duplication.");
-+            if (ASYNC_ITEM_CONVERSION) {
-+                owner.getLogger()
-+                        .info("[IF] Packet GUI async item conversion: enabled. "
-+                                + "Bukkit-to-packet item conversion is offloaded to "
-+                                + ASYNC_ITEM_CONVERSION_THREADS
-+                                + " dedicated worker threads.");
-+            } else {
-+                owner.getLogger()
-+                        .warning("[IF] Packet GUI async item conversion: disabled. "
-+                                + "Bukkit-to-packet item conversion will run on the player/region scheduler and may "
-+                                + "increase GUI click/render load. Re-enable with "
-+                                + "-Dme.devnatan.inventoryframework.packet.async-conversion=true.");
-+            }
++                            + "Native outbound sender is active for Minecraft "
++                            + nativeSender.minecraftVersion()
++                            + ". This is the recommended mode for preventing GUI item duplication.");
 +        } catch (final RuntimeException exception) {
 +            available = false;
 +            owner.getLogger().log(Level.WARNING, "Failed to register packet GUI backend. Falling back to Bukkit.", exception);
@@ -1018,7 +1019,7 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +        }
 +        sessions.clear();
 +        viewerInventories.clear();
-+        conversionExecutor.shutdownNow();
++        nativeOutbound = null;
 +
 +        if (listener == null) {
 +            return;
@@ -1228,7 +1229,7 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +        final PacketViewerInventory inventory = inventoryFor(user.getUUID());
 +        if (windowId == PacketInventoryConstants.PLAYER_WINDOW_ID) {
 +            inventory.applyPlayerWindowItems(items, carried);
-+            mirrorPlayerInventoryWindow(user.getUUID(), inventory);
++            mirrorPlayerInventoryWindow(user.getUUID());
 +            return;
 +        }
 +
@@ -1268,14 +1269,14 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +        }
 +    }
 +
-+    private void mirrorPlayerInventoryWindow(UUID viewerId, PacketViewerInventory inventory) {
++    private void mirrorPlayerInventoryWindow(UUID viewerId) {
 +        final PacketGuiSession session = sessions.get(viewerId);
 +        if (!isTracked(session) || session.closeRequested()) {
 +            return;
 +        }
 +
 +        final List<Integer> guiSlots = new ArrayList<>(36);
-+        final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items = new ArrayList<>(36);
++        final List<Integer> playerSlots = new ArrayList<>(36);
 +        for (int slot = PacketInventoryConstants.ITEMS_START;
 +                slot < PacketInventoryConstants.HOTBAR_START + 9;
 +                slot++) {
@@ -1285,7 +1286,7 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            }
 +
 +            guiSlots.add(guiSlot);
-+            items.add(inventory.item(slot));
++            playerSlots.add(slot);
 +        }
 +
 +        runOnPlayer(session.player(), () -> {
@@ -1295,12 +1296,12 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +
 +            final int stateId = session.nextStateId();
 +            for (int index = 0; index < guiSlots.size(); index++) {
-+                session.user()
-+                        .sendPacket(new WrapperPlayServerSetSlot(
-+                                session.windowId(),
-+                                stateId,
-+                                guiSlots.get(index),
-+                                items.get(index)));
++                nativeOutbound.sendContainerSetSlot(
++                        session.player(),
++                        session.windowId(),
++                        stateId,
++                        guiSlots.get(index),
++                        cloneItem(playerInventoryItem(session.player(), playerSlots.get(index))));
 +            }
 +        });
 +    }
@@ -1317,18 +1318,17 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            return;
 +        }
 +
-+        final com.github.retrooper.packetevents.protocol.item.ItemStack mirrorItem = PacketItemConverter.copy(item);
 +        runOnPlayer(session.player(), () -> {
 +            if (!isTracked(session) || session.closeRequested()) {
 +                return;
 +            }
 +
-+            session.user()
-+                    .sendPacket(new WrapperPlayServerSetSlot(
-+                            session.windowId(),
-+                            session.nextStateId(),
-+                            guiSlot,
-+                            mirrorItem));
++            nativeOutbound.sendContainerSetSlot(
++                    session.player(),
++                    session.windowId(),
++                    session.nextStateId(),
++                    guiSlot,
++                    cloneItem(playerInventoryItem(session.player(), playerWindowSlot)));
 +        });
 +    }
 +
@@ -1489,7 +1489,7 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            } else {
 +                addChangedTopSlots(conversionPlan, session, previous, render, forcedTopSlotRepairs);
 +                addPlayerSlotRepairs(conversionPlan, session, render, playerSlotRepairs);
-+                addCursor(conversionPlan, session.viewerInventory().cursor());
++                addCursor(conversionPlan, cloneItem(session.player().getItemOnCursor()));
 +            }
 +
 +            session.appliedRender(render);
@@ -1514,7 +1514,7 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            } else {
 +                packet = new WrapperPlayServerOpenWindow(windowId, "minecraft:chest", title, size, 0);
 +            }
-+            packets.add(packet);
++            packets.add((sender, player) -> targetSession.user().sendPacket(packet));
 +            return true;
 +        });
 +    }
@@ -1525,26 +1525,25 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            PacketGuiRender render,
 +            PlayerInventorySnapshot playerInventorySnapshot) {
 +        final int stateId = session.nextStateId();
-+        final PacketGuiSession.PacketItemSnapshot[] topItems =
-+                new PacketGuiSession.PacketItemSnapshot[render.size()];
++        final ItemStack[] topItems = new ItemStack[render.size()];
 +        for (int slot = 0; slot < render.size(); slot++) {
-+            topItems[slot] = session.packetItemSnapshot(render, slot);
++            topItems[slot] = render.bukkitItem(slot);
 +        }
++        final ItemStack cursor = playerInventorySnapshot.cursor();
 +
 +        conversionPlan.addOperation((targetSession, packets) -> {
-+            final List<com.github.retrooper.packetevents.protocol.item.ItemStack> items =
-+                    new ArrayList<>(topItems.length + 36);
-+            for (final PacketGuiSession.PacketItemSnapshot topItem : topItems) {
++            final List<ItemStack> items = new ArrayList<>(topItems.length + 36);
++            for (final ItemStack topItem : topItems) {
 +                if (!canConvertPlan(targetSession, conversionPlan)) {
 +                    return false;
 +                }
-+                items.add(convertTopItem(targetSession, topItem));
++                items.add(cloneItem(topItem));
 +            }
 +
 +            for (int slot = PacketInventoryConstants.ITEMS_START;
 +                    slot < PacketInventoryConstants.ITEMS_START + 27;
 +                    slot++) {
-+                if (!addConvertedPlayerInventoryItem(targetSession, conversionPlan, playerInventorySnapshot, items, slot)) {
++                if (!addPlayerInventoryItem(targetSession, conversionPlan, playerInventorySnapshot, items, slot)) {
 +                    return false;
 +                }
 +            }
@@ -1552,41 +1551,32 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            for (int slot = PacketInventoryConstants.HOTBAR_START;
 +                    slot < PacketInventoryConstants.HOTBAR_START + 9;
 +                    slot++) {
-+                if (!addConvertedPlayerInventoryItem(targetSession, conversionPlan, playerInventorySnapshot, items, slot)) {
++                if (!addPlayerInventoryItem(targetSession, conversionPlan, playerInventorySnapshot, items, slot)) {
 +                    return false;
 +                }
 +            }
 +
-+            final com.github.retrooper.packetevents.protocol.item.ItemStack cursor =
-+                    convertBukkitItem(playerInventorySnapshot.cursor());
-+            if (!canConvertPlan(targetSession, conversionPlan)) {
-+                return false;
-+            }
-+            targetSession.viewerInventory().applyCursor(cursor);
-+
-+            packets.add(new WrapperPlayServerWindowItems(
++            packets.add((sender, player) -> sender.sendContainerSetContent(
++                    player,
 +                    conversionPlan.windowId(),
 +                    stateId,
 +                    items,
-+                    cursor));
++                    cloneItem(cursor)));
 +            return true;
 +        });
 +    }
 +
-+    private boolean addConvertedPlayerInventoryItem(
++    private boolean addPlayerInventoryItem(
 +            PacketGuiSession session,
 +            PacketGuiConversionPlan conversionPlan,
 +            PlayerInventorySnapshot playerInventorySnapshot,
-+            List<com.github.retrooper.packetevents.protocol.item.ItemStack> target,
++            List<ItemStack> target,
 +            int playerWindowSlot) {
-+        final com.github.retrooper.packetevents.protocol.item.ItemStack item =
-+                convertBukkitItem(playerInventorySnapshot.item(playerWindowSlot));
 +        if (!canConvertPlan(session, conversionPlan)) {
 +            return false;
 +        }
 +
-+        session.viewerInventory().applySlot(playerWindowSlot, item);
-+        target.add(PacketItemConverter.copy(item));
++        target.add(cloneItem(playerInventorySnapshot.item(playerWindowSlot)));
 +        return true;
 +    }
 +
@@ -1609,19 +1599,18 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +
 +            final int currentStateId = stateId;
 +            final int currentSlot = slot;
-+            final PacketGuiSession.PacketItemSnapshot itemSnapshot = session.packetItemSnapshot(render, currentSlot);
++            final ItemStack itemSnapshot = render.bukkitItem(currentSlot);
 +            conversionPlan.addOperation((targetSession, packets) -> {
-+                final com.github.retrooper.packetevents.protocol.item.ItemStack item =
-+                        convertTopItem(targetSession, itemSnapshot);
 +                if (!canConvertPlan(targetSession, conversionPlan)) {
 +                    return false;
 +                }
 +
-+                packets.add(new WrapperPlayServerSetSlot(
++                packets.add((sender, player) -> sender.sendContainerSetSlot(
++                        player,
 +                        conversionPlan.windowId(),
 +                        currentStateId,
 +                        currentSlot,
-+                        item));
++                        cloneItem(itemSnapshot)));
 +                return true;
 +            });
 +        }
@@ -1640,49 +1629,40 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +        for (final int playerSlot : playerSlotRepairs) {
 +            final ItemStack itemSnapshot = cloneItem(playerInventoryItem(session.player(), playerSlot));
 +            final int openGuiSlot = mapPlayerWindowSlotToOpenGuiSlot(render.size(), playerSlot);
-+            final int packetWindowId;
-+            final int packetSlot;
 +            final int stateId;
 +            if (openGuiSlot >= 0) {
 +                if (guiStateId < 0) {
 +                    guiStateId = session.nextStateId();
 +                }
-+                packetWindowId = session.windowId();
-+                packetSlot = openGuiSlot;
 +                stateId = guiStateId;
 +            } else {
-+                packetWindowId = PacketInventoryConstants.PLAYER_WINDOW_ID;
-+                packetSlot = playerSlot;
 +                stateId = session.nextStateId();
 +            }
++            final int playerInventorySlot = PacketInventoryConstants.containerSlotToPlayerInventorySlot(playerSlot);
 +
 +            conversionPlan.addOperation((targetSession, packets) -> {
-+                final com.github.retrooper.packetevents.protocol.item.ItemStack item = convertBukkitItem(itemSnapshot);
 +                if (!canConvertPlan(targetSession, conversionPlan)) {
 +                    return false;
 +                }
 +
-+                targetSession.viewerInventory().applySlot(playerSlot, item);
-+                packets.add(new WrapperPlayServerSetSlot(packetWindowId, stateId, packetSlot, item));
++                if (openGuiSlot >= 0) {
++                    packets.add((sender, player) -> sender.sendContainerSetSlot(
++                            player,
++                            targetSession.windowId(),
++                            stateId,
++                            openGuiSlot,
++                            cloneItem(itemSnapshot)));
++                } else {
++                    packets.add((sender, player) -> sender.sendPlayerInventorySlot(
++                            player,
++                            playerInventorySlot,
++                            playerSlot,
++                            stateId,
++                            cloneItem(itemSnapshot)));
++                }
 +                return true;
 +            });
 +        }
-+    }
-+
-+    private com.github.retrooper.packetevents.protocol.item.ItemStack convertTopItem(
-+            PacketGuiSession session, PacketGuiSession.PacketItemSnapshot snapshot) {
-+        if (snapshot.cached()) {
-+            return snapshot.cachedPacketItem();
-+        }
-+
-+        final com.github.retrooper.packetevents.protocol.item.ItemStack item =
-+                PacketItemConverter.toPacket(snapshot.bukkitItem());
-+        session.cachePacketItem(snapshot, item);
-+        return PacketItemConverter.copy(item);
-+    }
-+
-+    private static com.github.retrooper.packetevents.protocol.item.ItemStack convertBukkitItem(ItemStack item) {
-+        return PacketItemConverter.toPacket(item);
 +    }
 +
 +    private static PlayerInventorySnapshot snapshotPlayerInventory(Player player) {
@@ -1734,28 +1714,16 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +    }
 +
 +    private void sendCursor(PacketGuiSession session) {
-+        session.user().sendPacket(new WrapperPlayServerSetCursorItem(session.viewerInventory().cursor()));
++        nativeOutbound.sendCursor(session.player(), cloneItem(session.player().getItemOnCursor()));
 +    }
 +
 +    private void addCursor(PacketGuiConversionPlan conversionPlan, ItemStack cursorSnapshot) {
 +        conversionPlan.addOperation((targetSession, packets) -> {
-+            final com.github.retrooper.packetevents.protocol.item.ItemStack cursor = convertBukkitItem(cursorSnapshot);
 +            if (!canConvertPlan(targetSession, conversionPlan)) {
 +                return false;
 +            }
 +
-+            targetSession.viewerInventory().applyCursor(cursor);
-+            packets.add(new WrapperPlayServerSetCursorItem(cursor));
-+            return true;
-+        });
-+    }
-+
-+    private void addCursor(
-+            PacketGuiConversionPlan conversionPlan,
-+            com.github.retrooper.packetevents.protocol.item.ItemStack cursor) {
-+        final com.github.retrooper.packetevents.protocol.item.ItemStack packetCursor = PacketItemConverter.copy(cursor);
-+        conversionPlan.addOperation((targetSession, packets) -> {
-+            packets.add(new WrapperPlayServerSetCursorItem(packetCursor));
++            packets.add((sender, player) -> sender.sendCursor(player, cloneItem(cursorSnapshot)));
 +            return true;
 +        });
 +    }
@@ -1765,19 +1733,12 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            return;
 +        }
 +
-+        if (!ASYNC_ITEM_CONVERSION) {
-+            sendConvertedRenderPlan(session, conversionPlan);
++        if (!isOnPlayerThread(session.player())) {
++            runOnPlayer(session.player(), () -> sendConvertedRenderPlan(session, conversionPlan));
 +            return;
 +        }
 +
-+        try {
-+            conversionExecutor.execute(() -> sendConvertedRenderPlan(session, conversionPlan));
-+        } catch (final RejectedExecutionException exception) {
-+            if (available) {
-+                owner.getLogger().log(Level.WARNING, "Failed to schedule async packet GUI item conversion", exception);
-+            }
-+            sendConvertedRenderPlan(session, conversionPlan);
-+        }
++        sendConvertedRenderPlan(session, conversionPlan);
 +    }
 +
 +    private void sendConvertedRenderPlan(PacketGuiSession session, PacketGuiConversionPlan conversionPlan) {
@@ -1786,7 +1747,7 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +        }
 +
 +        try {
-+            final List<PacketWrapper<?>> packets = new ArrayList<>();
++            final List<PacketGuiOutboundPacket> packets = new ArrayList<>();
 +            for (final PacketGuiConversionOperation operation : conversionPlan.operations()) {
 +                if (!canConvertPlan(session, conversionPlan)) {
 +                    return;
@@ -1798,18 +1759,19 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            }
 +
 +            sendRenderPlan(session, new PacketGuiSendPlan(
-+                    conversionPlan.user(),
++                    conversionPlan.channel(),
 +                    conversionPlan.windowId(),
 +                    conversionPlan.generation(),
 +                    packets));
 +        } catch (final RuntimeException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to convert packet GUI items asynchronously", exception);
++            owner.getLogger().log(Level.WARNING, "Failed to prepare native packet GUI item packets", exception);
 +            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
 +        }
 +    }
 +
 +    private boolean canConvertPlan(PacketGuiSession session, PacketGuiConversionPlan plan) {
 +        return isTracked(session)
++                && nativeOutbound != null
 +                && !session.closeRequested()
 +                && session.windowId() == plan.windowId()
 +                && session.acceptsSendGeneration(plan.generation())
@@ -1821,17 +1783,12 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            return;
 +        }
 +
-+        if (!ASYNC_PACKET_SEND) {
-+            sendRenderPlanNow(session, plan);
++        if (!isOnPlayerThread(session.player())) {
++            runOnPlayer(session.player(), () -> sendRenderPlanNow(session, plan));
 +            return;
 +        }
 +
-+        try {
-+            ChannelHelper.runInEventLoop(plan.channel(), () -> sendRenderPlanNow(session, plan));
-+        } catch (final RuntimeException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to schedule async packet GUI send", exception);
-+            sendRenderPlanNow(session, plan);
-+        }
++        sendRenderPlanNow(session, plan);
 +    }
 +
 +    private void sendRenderPlanNow(PacketGuiSession session, PacketGuiSendPlan plan) {
@@ -1840,22 +1797,22 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +        }
 +
 +        try {
-+            for (final PacketWrapper<?> packet : plan.packets()) {
++            for (final PacketGuiOutboundPacket packet : plan.packets()) {
 +                if (!canSendPlan(session, plan)) {
 +                    return;
 +                }
 +
-+                plan.user().writePacket(packet);
++                packet.send(nativeOutbound, session.player());
 +            }
-+            plan.user().flushPackets();
 +        } catch (final RuntimeException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to send async packet GUI render", exception);
++            owner.getLogger().log(Level.WARNING, "Failed to send native packet GUI render", exception);
 +            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
 +        }
 +    }
 +
 +    private boolean canSendPlan(PacketGuiSession session, PacketGuiSendPlan plan) {
 +        return isTracked(session)
++                && nativeOutbound != null
 +                && !session.closeRequested()
 +                && session.windowId() == plan.windowId()
 +                && session.acceptsSendGeneration(plan.generation())
@@ -2020,19 +1977,22 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +
 +    private interface PacketGuiConversionOperation {
 +
-+        boolean addPackets(PacketGuiSession session, List<PacketWrapper<?>> packets);
++        boolean addPackets(PacketGuiSession session, List<PacketGuiOutboundPacket> packets);
++    }
++
++    private interface PacketGuiOutboundPacket {
++
++        void send(PacketGuiNativeOutboundSender sender, Player player);
 +    }
 +
 +    private static final class PacketGuiConversionPlan {
 +
-+        private final User user;
 +        private final Object channel;
 +        private final int windowId;
 +        private final long generation;
 +        private final List<PacketGuiConversionOperation> operations = new ArrayList<>();
 +
 +        private PacketGuiConversionPlan(User user, int windowId, long generation) {
-+            this.user = user;
 +            this.channel = user.getChannel();
 +            this.windowId = windowId;
 +            this.generation = generation;
@@ -2040,10 +2000,6 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +
 +        private void addOperation(PacketGuiConversionOperation operation) {
 +            operations.add(operation);
-+        }
-+
-+        private User user() {
-+            return user;
 +        }
 +
 +        private Object channel() {
@@ -2090,41 +2046,22 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +        }
 +    }
 +
-+    private static final class PacketGuiThreadFactory implements ThreadFactory {
-+
-+        private final String name;
-+        private final AtomicInteger threadId = new AtomicInteger(1);
-+
-+        private PacketGuiThreadFactory(String name) {
-+            this.name = name;
-+        }
-+
-+        @Override
-+        public Thread newThread(Runnable runnable) {
-+            final Thread thread = new Thread(runnable, name + " #" + threadId.getAndIncrement());
-+            thread.setDaemon(true);
-+            return thread;
-+        }
-+    }
-+
 +    private static final class PacketGuiSendPlan {
 +
-+        private final User user;
 +        private final Object channel;
 +        private final int windowId;
 +        private final long generation;
-+        private final List<PacketWrapper<?>> packets;
++        private final List<PacketGuiOutboundPacket> packets;
 +
-+        private PacketGuiSendPlan(User user, int windowId, long generation, List<PacketWrapper<?>> packets) {
-+            this.user = user;
-+            this.channel = user.getChannel();
++        private PacketGuiSendPlan(
++                Object channel,
++                int windowId,
++                long generation,
++                List<PacketGuiOutboundPacket> packets) {
++            this.channel = channel;
 +            this.windowId = windowId;
 +            this.generation = generation;
 +            this.packets = List.copyOf(packets);
-+        }
-+
-+        private User user() {
-+            return user;
 +        }
 +
 +        private Object channel() {
@@ -2139,7 +2076,7 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +            return generation;
 +        }
 +
-+        private List<PacketWrapper<?>> packets() {
++        private List<PacketGuiOutboundPacket> packets() {
 +            return packets;
 +        }
 +
@@ -2148,6 +2085,7 @@ index 0000000000000000000000000000000000000000..0b437e29515dc65e1366bf8ad9f5a334
 +        }
 +    }
 +}
+
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..dfcd9d0b454ab265c9dba997646ddd91a2e80374
@@ -2346,6 +2284,387 @@ index 0000000000000000000000000000000000000000..dfcd9d0b454ab265c9dba997646ddd91
 +                + '}';
 +    }
 +}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ea9d5c6e1fefc0023abd6709960237e32f12dade
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
+@@ -0,0 +1,374 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.lang.reflect.Constructor;
++import java.lang.reflect.Field;
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Set;
++import org.bukkit.entity.Player;
++import org.bukkit.inventory.ItemStack;
++
++final class PacketGuiNativeOutboundSender {
++
++    private static final Set<String> SUPPORTED_MINECRAFT_VERSIONS = Set.of("26.1.2");
++
++    private final Class<?> packetClass;
++    private final Class<?> nmsItemStackClass;
++    private final Object emptyItemStack;
++    private final Method asNmsCopy;
++    private final Method getHandle;
++    private final Constructor<?> containerSetContentConstructor;
++    private final Constructor<?> containerSetSlotConstructor;
++    private final Constructor<?> setCursorItemConstructor;
++    private final Constructor<?> setPlayerInventoryConstructor;
++
++    private PacketGuiNativeOutboundSender() {
++        try {
++            this.packetClass = Class.forName("net.minecraft.network.protocol.Packet");
++            this.nmsItemStackClass = Class.forName("net.minecraft.world.item.ItemStack");
++            this.emptyItemStack = staticField(nmsItemStackClass, "EMPTY").get(null);
++            this.asNmsCopy = craftItemStackClass().getMethod("asNMSCopy", ItemStack.class);
++            this.getHandle = craftClass("entity.CraftPlayer").getMethod("getHandle");
++            this.containerSetContentConstructor = Class.forName(
++                            "net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket")
++                    .getConstructor(int.class, int.class, List.class, nmsItemStackClass);
++            this.containerSetSlotConstructor = Class.forName(
++                            "net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket")
++                    .getConstructor(int.class, int.class, int.class, nmsItemStackClass);
++            this.setCursorItemConstructor = optionalConstructor(
++                    "net.minecraft.network.protocol.game.ClientboundSetCursorItemPacket",
++                    nmsItemStackClass);
++            this.setPlayerInventoryConstructor = optionalConstructor(
++                    "net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket",
++                    int.class,
++                    nmsItemStackClass);
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to initialize native packet GUI item sender", exception);
++        }
++    }
++
++    static InitializationResult initialize() {
++        final String minecraftVersion = minecraftVersion();
++        final String bukkitVersion = bukkitVersion();
++        final String serverPackage = serverPackage();
++
++        if (!SUPPORTED_MINECRAFT_VERSIONS.contains(minecraftVersion)) {
++            return InitializationResult.unavailable(
++                    minecraftVersion,
++                    bukkitVersion,
++                    serverPackage,
++                    "Supported native packet GUI Minecraft versions: "
++                            + SUPPORTED_MINECRAFT_VERSIONS
++                            + "; detected "
++                            + minecraftVersion
++                            + ".");
++        }
++
++        try {
++            return InitializationResult.available(
++                    new PacketGuiNativeOutboundSender(),
++                    minecraftVersion,
++                    bukkitVersion,
++                    serverPackage,
++                    "Native packet GUI outbound sender initialized for Minecraft " + minecraftVersion + ".");
++        } catch (final RuntimeException exception) {
++            return InitializationResult.unavailable(
++                    minecraftVersion,
++                    bukkitVersion,
++                    serverPackage,
++                    "Native packet GUI outbound sender could not be initialized for Minecraft "
++                            + minecraftVersion
++                            + ".",
++                    exception);
++        }
++    }
++
++    void sendContainerSetContent(
++            Player player,
++            int windowId,
++            int stateId,
++            List<ItemStack> items,
++            ItemStack cursor) {
++        final List<Object> nmsItems = new ArrayList<>(items.size());
++        for (final ItemStack item : items) {
++            nmsItems.add(toNmsItem(item));
++        }
++
++        send(player, construct(containerSetContentConstructor, windowId, stateId, nmsItems, toNmsItem(cursor)));
++    }
++
++    void sendContainerSetSlot(Player player, int windowId, int stateId, int slot, ItemStack item) {
++        send(player, construct(containerSetSlotConstructor, windowId, stateId, slot, toNmsItem(item)));
++    }
++
++    void sendCursor(Player player, ItemStack item) {
++        final Object nmsItem = toNmsItem(item);
++        if (setCursorItemConstructor != null) {
++            send(player, construct(setCursorItemConstructor, nmsItem));
++            return;
++        }
++
++        send(player, construct(containerSetSlotConstructor, -1, -1, -1, nmsItem));
++    }
++
++    void sendPlayerInventorySlot(
++            Player player,
++            int playerInventorySlot,
++            int fallbackContainerSlot,
++            int fallbackStateId,
++            ItemStack item) {
++        final Object nmsItem = toNmsItem(item);
++        if (setPlayerInventoryConstructor != null && playerInventorySlot >= 0) {
++            send(player, construct(setPlayerInventoryConstructor, playerInventorySlot, nmsItem));
++            return;
++        }
++
++        send(player, construct(
++                containerSetSlotConstructor,
++                PacketInventoryConstants.PLAYER_WINDOW_ID,
++                fallbackStateId,
++                fallbackContainerSlot,
++                nmsItem));
++    }
++
++    private Object toNmsItem(ItemStack item) {
++        if (PacketItemConverter.isEmpty(item)) {
++            return emptyItemStack;
++        }
++
++        try {
++            final Object converted = asNmsCopy.invoke(null, PacketItemConverter.normalizedCopy(item));
++            return converted == null ? emptyItemStack : converted;
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to convert Bukkit item to native item stack", exception);
++        }
++    }
++
++    private Object construct(Constructor<?> constructor, Object... arguments) {
++        try {
++            return constructor.newInstance(arguments);
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to create native packet GUI item packet", exception);
++        }
++    }
++
++    private void send(Player player, Object packet) {
++        final Object handle = handle(player);
++        final Object connection = connection(handle);
++        final Method send = sendMethod(connection.getClass(), packet.getClass());
++        try {
++            send.invoke(connection, packet);
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to send native packet GUI item packet", exception);
++        }
++    }
++
++    private Object handle(Player player) {
++        try {
++            return getHandle.invoke(player);
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to access native player handle", exception);
++        }
++    }
++
++    private Object connection(Object handle) {
++        try {
++            final Field connection = field(handle.getClass(), "connection");
++            return connection.get(handle);
++        } catch (final ReflectiveOperationException ignored) {
++            return discoverConnection(handle);
++        }
++    }
++
++    private Object discoverConnection(Object handle) {
++        Class<?> type = handle.getClass();
++        while (type != null) {
++            for (final Field field : type.getDeclaredFields()) {
++                try {
++                    field.setAccessible(true);
++                    final Object value = field.get(handle);
++                    if (value != null && findSendMethod(value.getClass(), packetClass) != null) {
++                        return value;
++                    }
++                } catch (final ReflectiveOperationException ignored) {
++                    // Try the next field; this is a compatibility fallback for obfuscated runtimes.
++                }
++            }
++            type = type.getSuperclass();
++        }
++
++        throw new IllegalStateException("Failed to discover native player connection");
++    }
++
++    private Method sendMethod(Class<?> connectionClass, Class<?> concretePacketClass) {
++        final Method method = findSendMethod(connectionClass, concretePacketClass);
++        if (method == null) {
++            throw new IllegalStateException("Failed to find native player connection send method");
++        }
++        return method;
++    }
++
++    private Method findSendMethod(Class<?> connectionClass, Class<?> concretePacketClass) {
++        Class<?> type = connectionClass;
++        while (type != null) {
++            for (final Method method : type.getDeclaredMethods()) {
++                if (method.getParameterCount() != 1 || method.getReturnType() != Void.TYPE) {
++                    continue;
++                }
++
++                if (!method.getParameterTypes()[0].isAssignableFrom(concretePacketClass)) {
++                    continue;
++                }
++
++                method.setAccessible(true);
++                return method;
++            }
++            type = type.getSuperclass();
++        }
++
++        return null;
++    }
++
++    private static Class<?> craftItemStackClass() throws ClassNotFoundException {
++        return craftClass("inventory.CraftItemStack");
++    }
++
++    private static Class<?> craftClass(String className) throws ClassNotFoundException {
++        try {
++            return Class.forName("org.bukkit.craftbukkit." + className);
++        } catch (final ClassNotFoundException ignored) {
++            final String serverPackage = org.bukkit.Bukkit.getServer().getClass().getPackage().getName();
++            return Class.forName(serverPackage + "." + className);
++        }
++    }
++
++    private static Constructor<?> optionalConstructor(String className, Class<?>... parameterTypes) {
++        try {
++            return Class.forName(className).getConstructor(parameterTypes);
++        } catch (final ReflectiveOperationException ignored) {
++            return null;
++        }
++    }
++
++    private static Field staticField(Class<?> type, String name) throws NoSuchFieldException {
++        final Field field = type.getField(name);
++        field.setAccessible(true);
++        return field;
++    }
++
++    private static Field field(Class<?> type, String name) throws NoSuchFieldException {
++        Class<?> current = type;
++        while (current != null) {
++            try {
++                final Field field = current.getDeclaredField(name);
++                field.setAccessible(true);
++                return field;
++            } catch (final NoSuchFieldException ignored) {
++                current = current.getSuperclass();
++            }
++        }
++
++        throw new NoSuchFieldException(name);
++    }
++    static final class InitializationResult {
++
++        private final PacketGuiNativeOutboundSender sender;
++        private final String minecraftVersion;
++        private final String bukkitVersion;
++        private final String serverPackage;
++        private final String message;
++        private final Throwable failure;
++
++        private InitializationResult(
++                PacketGuiNativeOutboundSender sender,
++                String minecraftVersion,
++                String bukkitVersion,
++                String serverPackage,
++                String message,
++                Throwable failure) {
++            this.sender = sender;
++            this.minecraftVersion = minecraftVersion;
++            this.bukkitVersion = bukkitVersion;
++            this.serverPackage = serverPackage;
++            this.message = message;
++            this.failure = failure;
++        }
++
++        static InitializationResult available(
++                PacketGuiNativeOutboundSender sender,
++                String minecraftVersion,
++                String bukkitVersion,
++                String serverPackage,
++                String message) {
++            return new InitializationResult(sender, minecraftVersion, bukkitVersion, serverPackage, message, null);
++        }
++
++        static InitializationResult unavailable(
++                String minecraftVersion, String bukkitVersion, String serverPackage, String message) {
++            return unavailable(minecraftVersion, bukkitVersion, serverPackage, message, null);
++        }
++
++        static InitializationResult unavailable(
++                String minecraftVersion,
++                String bukkitVersion,
++                String serverPackage,
++                String message,
++                Throwable failure) {
++            return new InitializationResult(null, minecraftVersion, bukkitVersion, serverPackage, message, failure);
++        }
++
++        boolean available() {
++            return sender != null;
++        }
++
++        PacketGuiNativeOutboundSender sender() {
++            return sender;
++        }
++
++        String minecraftVersion() {
++            return minecraftVersion;
++        }
++
++        String bukkitVersion() {
++            return bukkitVersion;
++        }
++
++        String serverPackage() {
++            return serverPackage;
++        }
++
++        String message() {
++            return message;
++        }
++
++        Throwable failure() {
++            return failure;
++        }
++    }
++
++    private static String minecraftVersion() {
++        try {
++            return String.valueOf(org.bukkit.Bukkit.class.getMethod("getMinecraftVersion").invoke(null));
++        } catch (final ReflectiveOperationException exception) {
++            return "unknown";
++        }
++    }
++
++    private static String bukkitVersion() {
++        try {
++            return String.valueOf(org.bukkit.Bukkit.getBukkitVersion());
++        } catch (final RuntimeException exception) {
++            return "unknown";
++        }
++    }
++
++    private static String serverPackage() {
++        try {
++            return org.bukkit.Bukkit.getServer().getClass().getPackage().getName();
++        } catch (final RuntimeException exception) {
++            return "unknown";
++        }
++    }
++
++}
+
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..89cf420ff84c58826d06cbe9d92c4f9b3f074d03
@@ -3021,10 +3340,10 @@ index 0000000000000000000000000000000000000000..385be48437ff8be5817055aa9a27f8a9
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..aa6ab4aba33324a21bab6f7707532550c222af1a
+index 0000000000000000000000000000000000000000..afc341fc07b9f309a53a9602f43c712b47d0cb07
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,59 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +final class PacketInventoryConstants {
@@ -3063,13 +3382,33 @@ index 0000000000000000000000000000000000000000..aa6ab4aba33324a21bab6f7707532550
 +                return -1;
 +        }
 +    }
++
++    static int containerSlotToPlayerInventorySlot(int containerSlot) {
++        if (containerSlot >= ITEMS_START && containerSlot < HOTBAR_START) return containerSlot;
++        if (containerSlot >= HOTBAR_START && containerSlot < HOTBAR_START + 9) return containerSlot - HOTBAR_START;
++
++        switch (containerSlot) {
++            case SLOT_BOOTS:
++                return 36;
++            case SLOT_LEGGINGS:
++                return 37;
++            case SLOT_CHESTPLATE:
++                return 38;
++            case SLOT_HELMET:
++                return 39;
++            case SLOT_OFFHAND:
++                return 40;
++            default:
++                return -1;
++        }
++    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..246044d56eab871e7aad763ec95d1aa40a3fc6f6
+index 0000000000000000000000000000000000000000..826c90cd7aa87ba859946727b973b178c1338380
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,224 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import io.github.retrooper.packetevents.util.SpigotConversionUtil;
@@ -3140,6 +3479,10 @@ index 0000000000000000000000000000000000000000..246044d56eab871e7aad763ec95d1aa4
 +
 +    static boolean isEmpty(ItemStack item) {
 +        return item == null || item.getType() == Material.AIR || item.getAmount() <= 0;
++    }
++
++    static ItemStack normalizedCopy(ItemStack item) {
++        return normalizeItem(item);
 +    }
 +
 +    private static ItemStack normalizeItem(ItemStack item) {
