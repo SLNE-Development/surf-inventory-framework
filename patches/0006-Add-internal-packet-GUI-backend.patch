@@ -1010,7 +1010,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..b0f09c51843558bb1ef9ccb6f2710e1c3d0c746d
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1249 @@
+@@ -0,0 +1,1250 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1276,13 +1276,14 @@ index 0000000000000000000000000000000000000000..b0f09c51843558bb1ef9ccb6f2710e1c
 +            return;
 +        }
 +
-+        final PacketGuiRepairScope repairScope = click.repairScope(session.container().getSize());
++        final int topSize = session.container().getSize();
++        final PacketGuiRepairScope repairScope = click.repairScope(topSize);
 +        if (click.isOutsideClick()) {
 +            runOnPlayer(session.player(), () -> handlePacketClick(session, click, repairScope));
 +            return;
 +        }
 +
-+        if (repairScope.fullWindow()) {
++        if (repairScope.fullWindow() && !(click.isPlayerInventoryClick(topSize) && click.isShiftClick())) {
 +            requestRender(session, false, true);
 +            return;
 +        }
@@ -2265,7 +2266,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..989fed145f2d8edbbe75581a3249ed808eb7a64c
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,203 @@
+@@ -0,0 +1,202 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
@@ -2337,8 +2338,7 @@ index 0000000000000000000000000000000000000000..989fed145f2d8edbbe75581a3249ed80
 +    }
 +
 +    boolean isSafePlayerInventoryClick(int topSize) {
-+        return isPlayerInventoryClick(topSize)
-+                && (isPickupClick() || isQuickMoveClick() || isSwapClick() || isCloneClick());
++        return isPlayerInventoryClick(topSize) && (isPickupClick() || isSwapClick() || isCloneClick());
 +    }
 +
 +    PacketGuiRepairScope repairScope(int topSize) {
