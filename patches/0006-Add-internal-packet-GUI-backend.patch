@@ -1228,7 +1228,7 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..4539bd1242cdb1646d64ec2af6e3af5cb22993f1
+index 0000000000000000000000000000000000000000..0e5dc38e5d2c1f93c1d194c48187042dff656f49
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 @@ -0,0 +1,1224 @@
@@ -1306,7 +1306,7 @@ index 0000000000000000000000000000000000000000..4539bd1242cdb1646d64ec2af6e3af5c
 +    private final BukkitGuiBackend fallbackBackend;
 +    private final ConcurrentMap<UUID, PacketGuiSession> sessions = new ConcurrentHashMap<>();
 +    private final ConcurrentMap<UUID, PacketViewerWindowTracker> windowTrackers = new ConcurrentHashMap<>();
-+    private final AtomicInteger nextWindowId = new AtomicInteger(1);
++    private final AtomicInteger nextWindowId = PacketGuiWindowIds.newCounter();
 +    private final Set<String> reportedUnsupportedTypes = ConcurrentHashMap.newKeySet();
 +
 +    /**
@@ -3218,10 +3218,10 @@ index 0000000000000000000000000000000000000000..196be89c5dab50da4ba15107d02df0f2
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..36f011f845d718429c5892e584489c7f2880422b
+index 0000000000000000000000000000000000000000..e1a675ee337048beb08aa0c87f65017b8421be2e
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,134 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.event.PacketListenerAbstract;
@@ -3323,6 +3323,9 @@ index 0000000000000000000000000000000000000000..36f011f845d718429c5892e584489c7f
 +        }
 +
 +        if (packetType == PacketType.Play.Server.OPEN_WINDOW) {
++            // The backend opens its own windows through this same outbound path, so its packets come back
++            // through here. Filtering them out is what the id check is for - a real container can never carry
++            // a GUI window id, because PacketGuiWindowIds allocates outside the range vanilla uses.
 +            final WrapperPlayServerOpenWindow packet = new WrapperPlayServerOpenWindow(event);
 +            if (!backend.isGuiWindow(user, packet.getContainerId())) {
 +                backend.handleExternalInventoryOpen(user, packet.getContainerId());
@@ -3331,6 +3334,8 @@ index 0000000000000000000000000000000000000000..36f011f845d718429c5892e584489c7f
 +        }
 +
 +        if (packetType == PacketType.Play.Server.OPEN_HORSE_WINDOW) {
++            // No id check here: the backend never sends a horse window, so there is nothing of its own to
++            // filter out.
 +            final WrapperPlayServerOpenHorseWindow packet = new WrapperPlayServerOpenHorseWindow(event);
 +            backend.handleExternalInventoryOpen(user, packet.getWindowId());
 +            return;
@@ -3760,10 +3765,10 @@ index 0000000000000000000000000000000000000000..caf7e4bcdc4b93a38b5bb856499a69cd
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..3552d4e9df03a9e574cd94461129301346da2195
+index 0000000000000000000000000000000000000000..d5e26cf2c65956f7477c21529c4a520487ac2aa8
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,65 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.concurrent.atomic.AtomicInteger;
@@ -3771,26 +3776,46 @@ index 0000000000000000000000000000000000000000..3552d4e9df03a9e574cd944611293013
 +/**
 + * Allocates the fake container ids used for packet GUI windows.
 + *
-+ * <p>Vanilla hands out container ids for real menus from the same numeric range, and the client resolves
-+ * window ownership by id alone. Reusing an id that a real container currently holds would make the client
-+ * apply that container's updates to the GUI screen and route the player's clicks into the GUI pipeline, so
-+ * the viewer's active external window id is always skipped.
++ * <p>The client resolves window ownership by id alone, so a fake window that shares an id with a real one
++ * makes the client apply that container's updates to the GUI screen and routes the player's clicks into the
++ * GUI pipeline. Fake ids are therefore taken from a range vanilla never uses: {@code ServerPlayer} allocates
++ * real container ids with {@code containerCounter = containerCounter % 100 + 1}, i.e. {@code 1..100}, which
++ * leaves {@code 101..127} free. The upper bound keeps the id inside a signed byte, so it is valid both on
++ * protocol versions that encode the container id as a byte and on those that use a VarInt.
++ *
++ * <p>The viewer's tracked external window is skipped on top of that. It is redundant against vanilla, but not
++ * against another plugin that opens its own fake window in the same range.
 + */
 +final class PacketGuiWindowIds {
 +
++    /**
++     * The lowest fake window id, one past the highest id vanilla hands out for a real menu.
++     */
++    static final int MIN_WINDOW_ID = 101;
++
++    /**
++     * The highest fake window id that still fits in a signed byte.
++     */
 +    static final int MAX_WINDOW_ID = 127;
 +
 +    private PacketGuiWindowIds() {}
 +
 +    /**
-+     * Returns the next usable window id.
++     * Creates the rolling counter {@link #allocate(AtomicInteger, int)} draws from.
++     */
++    static AtomicInteger newCounter() {
++        return new AtomicInteger(MIN_WINDOW_ID - 1);
++    }
++
++    /**
++     * Returns the next usable window id, always within {@code 101..127}.
 +     *
 +     * @param counter           The rolling id counter shared by all viewers.
 +     * @param forbiddenWindowId The window id the viewer currently has open for a real container, or
 +     *                          {@code 0} when no external window is tracked.
 +     */
 +    static int allocate(AtomicInteger counter, int forbiddenWindowId) {
-+        for (int attempt = 0; attempt < MAX_WINDOW_ID; attempt++) {
++        for (int attempt = 0; attempt <= MAX_WINDOW_ID - MIN_WINDOW_ID; attempt++) {
 +            final int candidate = next(counter);
 +            if (candidate != forbiddenWindowId) {
 +                return candidate;
@@ -3800,8 +3825,13 @@ index 0000000000000000000000000000000000000000..3552d4e9df03a9e574cd944611293013
 +        return next(counter);
 +    }
 +
++    /**
++     * Advances the counter, wrapping at both ends. Any out-of-range value - including the initial one - is
++     * normalized to {@link #MIN_WINDOW_ID}, so the allocator can never leak an id vanilla might also use.
++     */
 +    private static int next(AtomicInteger counter) {
-+        return Math.max(1, counter.getAndUpdate(previous -> previous >= MAX_WINDOW_ID ? 1 : previous + 1));
++        return counter.updateAndGet(
++                previous -> previous < MIN_WINDOW_ID || previous >= MAX_WINDOW_ID ? MIN_WINDOW_ID : previous + 1);
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
@@ -4666,10 +4696,10 @@ index 0000000000000000000000000000000000000000..248745ce12a28003a4a137f68eb397a3
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7716d3a45577823a7728f8bfe4eb0150bd757af7
+index 0000000000000000000000000000000000000000..9d251743add80f827c025bc01f78c8b42f2d7e94
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,73 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -4681,38 +4711,66 @@ index 0000000000000000000000000000000000000000..7716d3a45577823a7728f8bfe4eb0150
 +
 +class PacketGuiWindowIdsTest {
 +
++    /** The highest container id vanilla can hand out for a real menu. */
++    private static final int HIGHEST_VANILLA_WINDOW_ID = 100;
++
 +    @Test
 +    void handsOutConsecutiveIdsWhenNothingIsForbidden() {
-+        final AtomicInteger counter = new AtomicInteger(1);
-+        assertEquals(1, PacketGuiWindowIds.allocate(counter, 0));
-+        assertEquals(2, PacketGuiWindowIds.allocate(counter, 0));
-+        assertEquals(3, PacketGuiWindowIds.allocate(counter, 0));
++        final AtomicInteger counter = PacketGuiWindowIds.newCounter();
++        assertEquals(101, PacketGuiWindowIds.allocate(counter, 0));
++        assertEquals(102, PacketGuiWindowIds.allocate(counter, 0));
++        assertEquals(103, PacketGuiWindowIds.allocate(counter, 0));
 +    }
 +
 +    @Test
 +    void skipsTheWindowIdTheViewerAlreadyHasOpen() {
-+        final AtomicInteger counter = new AtomicInteger(5);
-+        assertEquals(6, PacketGuiWindowIds.allocate(counter, 5));
++        final AtomicInteger counter = PacketGuiWindowIds.newCounter();
++        assertEquals(102, PacketGuiWindowIds.allocate(counter, 101));
 +    }
 +
 +    @Test
 +    void neverReturnsTheForbiddenIdAcrossTheWholeRange() {
-+        final AtomicInteger counter = new AtomicInteger(1);
++        final AtomicInteger counter = PacketGuiWindowIds.newCounter();
 +        for (int i = 0; i < PacketGuiWindowIds.MAX_WINDOW_ID * 2; i++) {
-+            assertNotEquals(42, PacketGuiWindowIds.allocate(counter, 42));
++            assertNotEquals(110, PacketGuiWindowIds.allocate(counter, 110));
 +        }
 +    }
 +
 +    @Test
-+    void rollsOverAtTheMaximumAndNeverReturnsZero() {
-+        final AtomicInteger counter = new AtomicInteger(PacketGuiWindowIds.MAX_WINDOW_ID);
++    void rollsOverAtTheMaximum() {
++        final AtomicInteger counter = new AtomicInteger(PacketGuiWindowIds.MAX_WINDOW_ID - 1);
 +        assertEquals(PacketGuiWindowIds.MAX_WINDOW_ID, PacketGuiWindowIds.allocate(counter, 0));
-+        assertEquals(1, PacketGuiWindowIds.allocate(counter, 0));
++        assertEquals(PacketGuiWindowIds.MIN_WINDOW_ID, PacketGuiWindowIds.allocate(counter, 0));
++    }
 +
-+        final AtomicInteger fresh = new AtomicInteger(1);
-+        for (int i = 0; i < PacketGuiWindowIds.MAX_WINDOW_ID * 3; i++) {
-+            assertTrue(PacketGuiWindowIds.allocate(fresh, 0) >= 1);
++    /**
++     * The point of the whole class: a fake window id must never be one vanilla could also give a real
++     * container, because the client tells the two apart by id alone.
++     */
++    @Test
++    void neverCollidesWithTheRangeVanillaUsesForRealContainers() {
++        assertTrue(PacketGuiWindowIds.MIN_WINDOW_ID > HIGHEST_VANILLA_WINDOW_ID);
++
++        final AtomicInteger counter = PacketGuiWindowIds.newCounter();
++        for (int i = 0; i < PacketGuiWindowIds.MAX_WINDOW_ID * 4; i++) {
++            final int windowId = PacketGuiWindowIds.allocate(counter, 0);
++            assertTrue(
++                    windowId >= PacketGuiWindowIds.MIN_WINDOW_ID && windowId <= PacketGuiWindowIds.MAX_WINDOW_ID,
++                    "window id out of range: " + windowId);
 +        }
++    }
++
++    /**
++     * Even a counter that was never initialized through {@link PacketGuiWindowIds#newCounter()} must not be
++     * able to produce an id in vanilla's range.
++     */
++    @Test
++    void normalizesAnOutOfRangeCounter() {
++        assertEquals(PacketGuiWindowIds.MIN_WINDOW_ID, PacketGuiWindowIds.allocate(new AtomicInteger(0), 0));
++        assertEquals(PacketGuiWindowIds.MIN_WINDOW_ID, PacketGuiWindowIds.allocate(new AtomicInteger(7), 0));
++        assertEquals(
++                PacketGuiWindowIds.MIN_WINDOW_ID,
++                PacketGuiWindowIds.allocate(new AtomicInteger(Integer.MAX_VALUE), 0));
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java
