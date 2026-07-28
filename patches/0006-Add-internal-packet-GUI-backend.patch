@@ -1228,10 +1228,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c5eed9ceb
+index 0000000000000000000000000000000000000000..06ba925f0dd63cf361bc522787ff789757e26e63
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1516 @@
+@@ -0,0 +1,1376 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1241,7 +1241,8 @@ index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c
 +import com.github.retrooper.packetevents.protocol.player.User;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCloseWindow;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenWindow;
-+import java.lang.reflect.Method;
++import com.tcoded.folialib.FoliaLib;
++import com.tcoded.folialib.impl.PlatformScheduler;
 +import java.util.ArrayList;
 +import java.util.List;
 +import java.util.Set;
@@ -1250,7 +1251,6 @@ index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c
 +import java.util.concurrent.ConcurrentMap;
 +import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.logging.Level;
-+import java.util.function.Consumer;
 +import me.devnatan.inventoryframework.BukkitViewer;
 +import me.devnatan.inventoryframework.RootView;
 +import me.devnatan.inventoryframework.ViewContainer;
@@ -1264,9 +1264,7 @@ index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c
 +import me.devnatan.inventoryframework.internal.BukkitGuiBackend;
 +import me.devnatan.inventoryframework.internal.GuiBackend;
 +import me.devnatan.inventoryframework.pipeline.StandardPipelinePhases;
-+import org.bukkit.Bukkit;
 +import org.bukkit.Material;
-+import org.bukkit.entity.Entity;
 +import org.bukkit.entity.Player;
 +import org.bukkit.event.inventory.InventoryAction;
 +import org.bukkit.event.inventory.InventoryType;
@@ -1303,13 +1301,8 @@ index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c
 +    private static final boolean DEBUG_CLICKS =
 +            Boolean.getBoolean("inventory-framework.gui-backend.debug-clicks");
 +
-+    private static final Method PLAYER_GET_SCHEDULER = optionalMethod(Player.class, "getScheduler");
-+    private static final Method BUKKIT_IS_OWNED_BY_CURRENT_REGION =
-+            optionalMethod(Bukkit.class, "isOwnedByCurrentRegion", Entity.class);
-+    private static final ConcurrentMap<Class<?>, Method> SCHEDULER_RUN = new ConcurrentHashMap<>();
-+    private static final ConcurrentMap<Class<?>, Method> SCHEDULER_RUN_DELAYED = new ConcurrentHashMap<>();
-+
 +    private final Plugin owner;
++    private final PlatformScheduler scheduler;
 +    private final BukkitGuiBackend fallbackBackend;
 +    private final ConcurrentMap<UUID, PacketGuiSession> sessions = new ConcurrentHashMap<>();
 +    private final ConcurrentMap<UUID, PacketViewerInventory> viewerInventories = new ConcurrentHashMap<>();
@@ -1318,11 +1311,11 @@ index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c
 +    private volatile PacketGuiNativeOutboundSender nativeOutbound;
 +    private PacketListenerCommon listener;
 +    private volatile boolean available = true;
-+    private volatile boolean regionOwnershipFailureLogged;
 +
 +    public PacketGuiBackend(@NotNull Plugin owner, @NotNull BukkitGuiBackend fallbackBackend) {
 +        this.owner = owner;
 +        this.fallbackBackend = fallbackBackend;
++        this.scheduler = new FoliaLib(owner).getScheduler();
 +    }
 +
 +    @Override
@@ -2426,126 +2419,35 @@ index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c
 +        return session != null && !session.closed() && sessions.get(session.viewerId()) == session;
 +    }
 +
++    /**
++     * Runs a task on the thread that owns the viewer.
++     *
++     * <p>Runs inline when already on that thread: several call sites depend on the work having happened by the
++     * time they return, most importantly {@code open()}, which publishes the session before rendering it.
++     */
 +    private void runOnPlayer(Player player, Runnable task) {
 +        if (isOnPlayerThread(player)) {
 +            task.run();
 +            return;
 +        }
 +
-+        if (tryRunEntityScheduler(player, task)) {
-+            return;
-+        }
-+
-+        if (PLAYER_GET_SCHEDULER != null) {
-+            // The entity scheduler exists but refused the task, which only happens once the player's scheduler
-+            // is retired. Falling back to the global scheduler would run GUI work on the wrong thread, so the
-+            // session is discarded instead.
-+            abandonSession(player);
-+            return;
-+        }
-+
-+        Bukkit.getScheduler().runTask(owner, task);
-+    }
-+
-+    private void runOnPlayerNextTick(Player player, Runnable task) {
-+        if (tryRunEntitySchedulerDelayed(player, task)) {
-+            return;
-+        }
-+
-+        if (PLAYER_GET_SCHEDULER != null) {
-+            abandonSession(player);
-+            return;
-+        }
-+
-+        Bukkit.getScheduler().runTask(owner, task);
-+    }
-+
-+    private boolean tryRunEntityScheduler(Player player, Runnable task) {
-+        final Object scheduler = entityScheduler(player);
-+        if (scheduler == null) {
-+            return false;
-+        }
-+
-+        final Method run = schedulerMethod(
-+                SCHEDULER_RUN, scheduler.getClass(), "run", Plugin.class, Consumer.class, Runnable.class);
-+        if (run == null) {
-+            return false;
-+        }
-+
-+        return invokeScheduler(run, scheduler, owner, consumer(task), retired(player));
-+    }
-+
-+    private boolean tryRunEntitySchedulerDelayed(Player player, Runnable task) {
-+        final Object scheduler = entityScheduler(player);
-+        if (scheduler == null) {
-+            return false;
-+        }
-+
-+        final Method runDelayed = schedulerMethod(
-+                SCHEDULER_RUN_DELAYED,
-+                scheduler.getClass(),
-+                "runDelayed",
-+                Plugin.class,
-+                Consumer.class,
-+                Runnable.class,
-+                long.class);
-+        if (runDelayed == null) {
-+            return tryRunEntityScheduler(player, task);
-+        }
-+
-+        return invokeScheduler(runDelayed, scheduler, owner, consumer(task), retired(player), 1L);
-+    }
-+
-+    private Object entityScheduler(Player player) {
-+        if (PLAYER_GET_SCHEDULER == null) {
-+            return null;
-+        }
-+
-+        try {
-+            return PLAYER_GET_SCHEDULER.invoke(player);
-+        } catch (final ReflectiveOperationException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to access the packet GUI player scheduler", exception);
-+            return null;
-+        }
-+    }
-+
-+    private Method schedulerMethod(
-+            ConcurrentMap<Class<?>, Method> cache,
-+            Class<?> schedulerClass,
-+            String name,
-+            Class<?>... parameterTypes) {
-+        final Method cached = cache.get(schedulerClass);
-+        if (cached != null) {
-+            return cached;
-+        }
-+
-+        final Method resolved = optionalMethod(schedulerClass, name, parameterTypes);
-+        if (resolved != null) {
-+            cache.putIfAbsent(schedulerClass, resolved);
-+        }
-+        return resolved;
++        scheduler.runAtEntityWithFallback(player, ignored -> task.run(), () -> abandonSession(player));
 +    }
 +
 +    /**
-+     * Invokes a scheduler method and reports whether the task was actually accepted. Folia returns
-+     * {@code null} from {@code run}/{@code runDelayed} when the entity scheduler is retired; ignoring that
-+     * silently drops the task and latches the session's scheduled-render flag forever.
++     * Runs a task on the viewer's thread on the following tick.
++     *
++     * <p>A {@code null} task means the scheduler refused the work because the viewer is gone; the session is
++     * then discarded so a latched render request cannot swallow every later one.
 +     */
-+    private boolean invokeScheduler(Method method, Object scheduler, Object... arguments) {
-+        try {
-+            return method.invoke(scheduler, arguments) != null;
-+        } catch (final ReflectiveOperationException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to schedule a packet GUI task", exception);
-+            return false;
++    private void runOnPlayerNextTick(Player player, Runnable task) {
++        if (scheduler.runAtEntityLater(player, task, () -> abandonSession(player), 1L) == null) {
++            abandonSession(player);
 +        }
 +    }
 +
-+    private static Consumer<Object> consumer(Runnable task) {
-+        return ignored -> task.run();
-+    }
-+
-+    private Runnable retired(Player player) {
-+        return () -> abandonSession(player);
++    private boolean isOnPlayerThread(Player player) {
++        return scheduler.isOwnedByCurrentRegion(player);
 +    }
 +
 +    /**
@@ -2568,37 +2470,6 @@ index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c
 +        owner.getLogger()
 +                .fine("Discarded packet GUI session for " + player.getName()
 +                        + ": the viewer's scheduler is no longer accepting tasks.");
-+    }
-+
-+    private boolean isOnPlayerThread(Player player) {
-+        final Boolean ownedByCurrentRegion = isOwnedByCurrentRegion(player);
-+        if (ownedByCurrentRegion != null) {
-+            return ownedByCurrentRegion;
-+        }
-+
-+        return Bukkit.isPrimaryThread();
-+    }
-+
-+    private Boolean isOwnedByCurrentRegion(Player player) {
-+        if (BUKKIT_IS_OWNED_BY_CURRENT_REGION == null) {
-+            return null;
-+        }
-+
-+        try {
-+            return Boolean.TRUE.equals(BUKKIT_IS_OWNED_BY_CURRENT_REGION.invoke(null, player));
-+        } catch (final ReflectiveOperationException exception) {
-+            if (!regionOwnershipFailureLogged) {
-+                regionOwnershipFailureLogged = true;
-+                owner.getLogger()
-+                        .log(
-+                                Level.WARNING,
-+                                "Failed to query region ownership; falling back to the primary thread check.",
-+                                exception);
-+            }
-+            // null makes the caller fall back to Bukkit#isPrimaryThread instead of permanently claiming
-+            // "wrong thread", which used to make every render reschedule itself forever.
-+            return null;
-+        }
 +    }
 +
 +    private static InventoryType.SlotType slotTypeOf(PacketGuiClick click, int topSize) {
@@ -2626,17 +2497,6 @@ index 0000000000000000000000000000000000000000..9728fcab2f11af8a5d64337fede38a0c
 +
 +        return InventoryAction.NOTHING;
 +    }
-+
-+    private static Method optionalMethod(Class<?> owner, String name, Class<?>... parameterTypes) {
-+        try {
-+            final Method method = owner.getMethod(name, parameterTypes);
-+            method.setAccessible(true);
-+            return method;
-+        } catch (final NoSuchMethodException ignored) {
-+            return null;
-+        }
-+    }
-+
 +
 +    private interface PacketGuiConversionOperation {
 +

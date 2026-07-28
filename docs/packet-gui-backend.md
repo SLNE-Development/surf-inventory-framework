@@ -116,6 +116,18 @@ deliberately routed into the click API rather than denied, because the packet is
 listener, so nothing vanilla can mutate. What *is* denied is drag, drop, double-click and any unrecognised
 mode.
 
+## Scheduling
+
+All GUI work runs on the thread that owns the viewer, scheduled through FoliaLib's `PlatformScheduler`, which
+the module already depends on. On Folia that is the player's region scheduler; on Paper and Spigot it resolves
+to the primary thread. When the task is already on the right thread it runs inline rather than being deferred —
+several call sites depend on the work having happened by the time they return, most importantly `open()`, which
+publishes the session before rendering it.
+
+If the scheduler refuses a task, the viewer is gone: the session is discarded rather than run on the wrong
+thread. That matters for the next-tick path in particular, because a dropped render task would otherwise leave
+the session's render request latched and swallow every later one.
+
 ## Build note
 
 `spotlessCheck` and `spotlessApply` do not run under this project's JDK 25 toolchain —
