@@ -116,6 +116,19 @@ deliberately routed into the click API rather than denied, because the packet is
 listener, so nothing vanilla can mutate. What *is* denied is drag, drop, double-click and any unrecognised
 mode.
 
+## Where the rendered items come from
+
+The top rows come from the view's own render model in `PacketViewContainer`; they are never real inventory
+contents. The bottom rows are read live from the viewer's Bukkit inventory and sent through
+`PacketGuiNativeOutboundSender`, i.e. the same outbound path vanilla uses.
+
+That last point matters for surf-api's PacketLore: because the packets travel the server's normal outbound
+path, an enchanted item in the viewer's inventory shows its enchantment lore inside a packet GUI exactly as it
+does anywhere else, decorated once. The backend deliberately keeps **no** mirror of the viewer's items — items
+captured from already-intercepted outbound packets would be decorated a second time when resent. The only
+packet-side viewer state is `PacketViewerWindowTracker`, which remembers the id of the real container window so
+a fake window id never collides with it.
+
 ## Scheduling
 
 All GUI work runs on the thread that owns the viewer, scheduled through FoliaLib's `PlatformScheduler`, which
