@@ -2529,10 +2529,10 @@ index 0000000000000000000000000000000000000000..79f9d50878de8ae5c091f17c8a7e92bc
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671af45a769
+index 0000000000000000000000000000000000000000..358fcab62856c545272bc3c371c36c9df2209fcd
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,505 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
@@ -2541,7 +2541,6 @@ index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671
 +import java.util.ArrayList;
 +import java.util.List;
 +import java.util.Objects;
-+import java.util.Set;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.concurrent.ConcurrentMap;
 +import org.bukkit.entity.Player;
@@ -2549,7 +2548,7 @@ index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671
 +
 +final class PacketGuiNativeOutboundSender {
 +
-+    private static final Set<String> SUPPORTED_MINECRAFT_VERSIONS = Set.of("26.1.2");
++    private static final String NATIVE_PROPERTY = "inventory-framework.gui-backend.native";
 +
 +    private final Class<?> packetClass;
 +    private final Class<?> nmsItemStackClass;
@@ -2557,6 +2556,8 @@ index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671
 +    private final Method asNmsCopy;
 +    private final Method getHandle;
 +    private final Constructor<?> containerSetContentConstructor;
++    private final boolean containerSetContentTakesNonNullList;
++    private final Method nonNullListWithSize;
 +    private final Constructor<?> containerSetSlotConstructor;
 +    private final Constructor<?> setCursorItemConstructor;
 +    private final Constructor<?> setPlayerInventoryConstructor;
@@ -2570,9 +2571,24 @@ index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671
 +            this.emptyItemStack = staticField(nmsItemStackClass, "EMPTY").get(null);
 +            this.asNmsCopy = craftItemStackClass().getMethod("asNMSCopy", ItemStack.class);
 +            this.getHandle = craftClass("entity.CraftPlayer").getMethod("getHandle");
-+            this.containerSetContentConstructor = Class.forName(
-+                            "net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket")
-+                    .getConstructor(int.class, int.class, List.class, nmsItemStackClass);
++            // Vanilla's public constructor takes NonNullList on most versions and a plain List on others.
++            // Class#getConstructor matches parameter types exactly, so both shapes are probed.
++            final Class<?> containerSetContent =
++                    Class.forName("net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket");
++            final Class<?> nonNullListClass = optionalClass("net.minecraft.core.NonNullList");
++            Constructor<?> setContent = nonNullListClass == null
++                    ? null
++                    : optionalConstructor(
++                            containerSetContent, int.class, int.class, nonNullListClass, nmsItemStackClass);
++            final boolean takesNonNullList = setContent != null;
++            if (setContent == null) {
++                setContent = containerSetContent.getConstructor(int.class, int.class, List.class, nmsItemStackClass);
++            }
++            this.containerSetContentConstructor = setContent;
++            this.containerSetContentTakesNonNullList = takesNonNullList;
++            this.nonNullListWithSize =
++                    takesNonNullList ? nonNullListClass.getMethod("withSize", int.class, Object.class) : null;
++
 +            this.containerSetSlotConstructor = Class.forName(
 +                            "net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket")
 +                    .getConstructor(int.class, int.class, int.class, nmsItemStackClass);
@@ -2593,21 +2609,19 @@ index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671
 +        final String bukkitVersion = bukkitVersion();
 +        final String serverPackage = serverPackage();
 +
-+        if (!SUPPORTED_MINECRAFT_VERSIONS.contains(minecraftVersion)) {
++        if ("off".equalsIgnoreCase(System.getProperty(NATIVE_PROPERTY, "on"))) {
 +            return InitializationResult.unavailable(
 +                    minecraftVersion,
 +                    bukkitVersion,
 +                    serverPackage,
-+                    "Supported native packet GUI Minecraft versions: "
-+                            + SUPPORTED_MINECRAFT_VERSIONS
-+                            + "; detected "
-+                            + minecraftVersion
-+                            + ".");
++                    "The native packet GUI outbound sender was disabled with -D" + NATIVE_PROPERTY + "=off.");
 +        }
 +
 +        try {
++            final PacketGuiNativeOutboundSender sender = new PacketGuiNativeOutboundSender();
++            sender.selfCheck();
 +            return InitializationResult.available(
-+                    new PacketGuiNativeOutboundSender(),
++                    sender,
 +                    minecraftVersion,
 +                    bukkitVersion,
 +                    serverPackage,
@@ -2617,10 +2631,33 @@ index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671
 +                    minecraftVersion,
 +                    bukkitVersion,
 +                    serverPackage,
-+                    "Native packet GUI outbound sender could not be initialized for Minecraft "
++                    "The server's packet classes do not match what the native packet GUI outbound sender "
++                            + "expects on Minecraft "
 +                            + minecraftVersion
 +                            + ".",
 +                    exception);
++        }
++    }
++
++    /**
++     * Builds one of every packet this sender emits, without sending anything.
++     *
++     * <p>Support is decided by capability, not by a version string: a signature mismatch in the server's
++     * packet classes surfaces here, at startup, instead of on the first GUI open.
++     */
++    private void selfCheck() {
++        final List<ItemStack> probeItems = new ArrayList<>(9);
++        for (int slot = 0; slot < 9; slot++) {
++            probeItems.add(null);
++        }
++
++        construct(containerSetContentConstructor, 1, 1, nmsItemList(probeItems), emptyItemStack);
++        construct(containerSetSlotConstructor, 1, 1, 0, emptyItemStack);
++        if (setCursorItemConstructor != null) {
++            construct(setCursorItemConstructor, emptyItemStack);
++        }
++        if (setPlayerInventoryConstructor != null) {
++            construct(setPlayerInventoryConstructor, 0, emptyItemStack);
 +        }
 +    }
 +
@@ -2630,12 +2667,39 @@ index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671
 +            int stateId,
 +            List<ItemStack> items,
 +            ItemStack cursor) {
-+        final List<Object> nmsItems = new ArrayList<>(items.size());
-+        for (final ItemStack item : items) {
-+            nmsItems.add(toNmsItem(item));
++        send(
++                player,
++                construct(
++                        containerSetContentConstructor,
++                        windowId,
++                        stateId,
++                        nmsItemList(items),
++                        toNmsItem(cursor)));
++    }
++
++    /**
++     * Converts the items into the list type the resolved packet constructor expects.
++     */
++    private Object nmsItemList(List<ItemStack> items) {
++        if (!containerSetContentTakesNonNullList) {
++            final List<Object> nmsItems = new ArrayList<>(items.size());
++            for (final ItemStack item : items) {
++                nmsItems.add(toNmsItem(item));
++            }
++            return nmsItems;
 +        }
 +
-+        send(player, construct(containerSetContentConstructor, windowId, stateId, nmsItems, toNmsItem(cursor)));
++        try {
++            @SuppressWarnings("unchecked")
++            final List<Object> nmsItems =
++                    (List<Object>) nonNullListWithSize.invoke(null, items.size(), emptyItemStack);
++            for (int slot = 0; slot < items.size(); slot++) {
++                nmsItems.set(slot, toNmsItem(items.get(slot)));
++            }
++            return nmsItems;
++        } catch (final ReflectiveOperationException exception) {
++            throw new IllegalStateException("Failed to build a native item list", exception);
++        }
 +    }
 +
 +    void sendContainerSetSlot(Player player, int windowId, int stateId, int slot, ItemStack item) {
@@ -2794,6 +2858,22 @@ index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671
 +        } catch (final ClassNotFoundException ignored) {
 +            final String serverPackage = org.bukkit.Bukkit.getServer().getClass().getPackage().getName();
 +            return Class.forName(serverPackage + "." + className);
++        }
++    }
++
++    private static Class<?> optionalClass(String className) {
++        try {
++            return Class.forName(className);
++        } catch (final ClassNotFoundException ignored) {
++            return null;
++        }
++    }
++
++    private static Constructor<?> optionalConstructor(Class<?> type, Class<?>... parameterTypes) {
++        try {
++            return type.getConstructor(parameterTypes);
++        } catch (final NoSuchMethodException ignored) {
++            return null;
 +        }
 +    }
 +
