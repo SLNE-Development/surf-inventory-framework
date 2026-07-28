@@ -1011,10 +1011,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..4288622baab670cec914570308efa67138ead488
+index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc4508729d911025
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1252 @@
+@@ -0,0 +1,1285 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1049,6 +1049,8 @@ index 0000000000000000000000000000000000000000..4288622baab670cec914570308efa671
 +import org.bukkit.Bukkit;
 +import org.bukkit.entity.Entity;
 +import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.InventoryType;
++import org.bukkit.inventory.InventoryView;
 +import org.bukkit.inventory.ItemStack;
 +import org.bukkit.inventory.PlayerInventory;
 +import org.bukkit.plugin.Plugin;
@@ -1056,7 +1058,6 @@ index 0000000000000000000000000000000000000000..4288622baab670cec914570308efa671
 +
 +public final class PacketGuiBackend implements GuiBackend {
 +
-+    private static final int MAX_WINDOW_ID = 127;
 +    private static final String CLOSE_ORIGIN_CLIENT = "packet-gui-client-close";
 +    private static final String CLOSE_ORIGIN_SERVER = "packet-gui-server-close";
 +    private static final String CLOSE_ORIGIN_QUIT = "packet-gui-player-quit";
@@ -1212,17 +1213,53 @@ index 0000000000000000000000000000000000000000..4288622baab670cec914570308efa671
 +            return;
 +        }
 +
-+        final PacketGuiSession previous = sessions.get(player.getUniqueId());
++        final PacketViewerInventory viewerInventory = inventoryFor(player.getUniqueId());
++        final int externalWindowId = viewerInventory.openWindowId();
++
++        // A real server-side menu must not stay open behind the fake window: the client would render the GUI
++        // while the server keeps ticking the real container, and closing the GUI would never release it.
++        closeRealInventory(player);
++
++        final PacketGuiSession session = new PacketGuiSession(
++                viewer,
++                user,
++                PacketGuiWindowIds.allocate(nextWindowId, externalWindowId),
++                container,
++                viewerInventory);
++
++        // Publish before tearing down the previous session: closeSession runs the CLOSE pipeline, i.e.
++        // arbitrary developer code that may re-enter open(). The conditional remove inside closeSession keeps
++        // it from evicting this session.
++        final PacketGuiSession previous = sessions.put(player.getUniqueId(), session);
 +        if (previous != null) {
-+            closeSession(previous, false, CLOSE_ORIGIN_SERVER, true, true);
++            try {
++                closeSession(previous, false, CLOSE_ORIGIN_SERVER, true, true);
++            } catch (final RuntimeException exception) {
++                owner.getLogger().log(Level.WARNING, "Failed to close the previous packet GUI session", exception);
++            }
 +        }
 +
-+        final PacketViewerInventory viewerInventory = inventoryFor(player.getUniqueId());
++        if (sessions.get(player.getUniqueId()) != session) {
++            // A close handler opened another view; that session owns the window now. Drop ours without running
++            // its close pipeline - it was never opened - and without sending a close packet.
++            closeSession(session, false, CLOSE_ORIGIN_SERVER, false, false);
++            return;
++        }
 +
-+        final PacketGuiSession session =
-+                new PacketGuiSession(viewer, user, allocateWindowId(), container, viewerInventory);
-+        sessions.put(player.getUniqueId(), session);
 +        renderSession(session, true, true);
++    }
++
++    /**
++     * Finalizes a real server-side inventory before a packet GUI takes over the client's window.
++     */
++    private void closeRealInventory(Player player) {
++        final InventoryView open = player.getOpenInventory();
++        final InventoryType type = open == null ? null : open.getType();
++        if (type == null || type == InventoryType.CRAFTING || type == InventoryType.PLAYER) {
++            return;
++        }
++
++        player.closeInventory();
 +    }
 +
 +    void close(@NotNull PacketViewContainer container, boolean sendClosePacket) {
@@ -2062,10 +2099,6 @@ index 0000000000000000000000000000000000000000..4288622baab670cec914570308efa671
 +
 +    private boolean isTracked(PacketGuiSession session) {
 +        return session != null && !session.closed() && sessions.get(session.viewerId()) == session;
-+    }
-+
-+    private int allocateWindowId() {
-+        return Math.max(1, nextWindowId.getAndUpdate(previous -> previous >= MAX_WINDOW_ID ? 1 : previous + 1));
 +    }
 +
 +    private void runOnPlayer(Player player, Runnable task) {
@@ -3610,6 +3643,52 @@ index 0000000000000000000000000000000000000000..180b53e896495308f79c1ed717bd2cbf
 +        }
 +    }
 +}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3552d4e9df03a9e574cd94461129301346da2195
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java
+@@ -0,0 +1,40 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.util.concurrent.atomic.AtomicInteger;
++
++/**
++ * Allocates the fake container ids used for packet GUI windows.
++ *
++ * <p>Vanilla hands out container ids for real menus from the same numeric range, and the client resolves
++ * window ownership by id alone. Reusing an id that a real container currently holds would make the client
++ * apply that container's updates to the GUI screen and route the player's clicks into the GUI pipeline, so
++ * the viewer's active external window id is always skipped.
++ */
++final class PacketGuiWindowIds {
++
++    static final int MAX_WINDOW_ID = 127;
++
++    private PacketGuiWindowIds() {}
++
++    /**
++     * Returns the next usable window id.
++     *
++     * @param counter           The rolling id counter shared by all viewers.
++     * @param forbiddenWindowId The window id the viewer currently has open for a real container, or
++     *                          {@code 0} when no external window is tracked.
++     */
++    static int allocate(AtomicInteger counter, int forbiddenWindowId) {
++        for (int attempt = 0; attempt < MAX_WINDOW_ID; attempt++) {
++            final int candidate = next(counter);
++            if (candidate != forbiddenWindowId) {
++                return candidate;
++            }
++        }
++
++        return next(counter);
++    }
++
++    private static int next(AtomicInteger counter) {
++        return Math.max(1, counter.getAndUpdate(previous -> previous >= MAX_WINDOW_ID ? 1 : previous + 1));
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..afc341fc07b9f309a53a9602f43c712b47d0cb07
@@ -4158,10 +4237,10 @@ index 0000000000000000000000000000000000000000..2a79e2d90b75a04436eda3c54780c226
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..fc2ec585cbb708f5c6ebff72c7c1b0000b987a31
+index 0000000000000000000000000000000000000000..bf9c47739306bb49d881663b934ec3d44837058d
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,171 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.ArrayList;
@@ -4271,6 +4350,14 @@ index 0000000000000000000000000000000000000000..fc2ec585cbb708f5c6ebff72c7c1b000
 +        appendRange(items, PacketInventoryConstants.ITEMS_START, 27);
 +        appendRange(items, PacketInventoryConstants.HOTBAR_START, 9);
 +        return items;
++    }
++
++    /**
++     * The window id of the real container the viewer currently has open, or
++     * {@link PacketInventoryConstants#PLAYER_WINDOW_ID} when none is tracked.
++     */
++    synchronized int openWindowId() {
++        return openWindowId;
 +    }
 +
 +    synchronized void setOpenWindow(int windowId, int topSize) {
@@ -4491,6 +4578,57 @@ index 0000000000000000000000000000000000000000..fe656625c26fc2f0931141aa5e24bf5d
 +                        () -> ClickType.valueOf(identifier),
 +                        "identifier '" + identifier + "' is not a Bukkit ClickType (" + type + "/" + button + ")");
 +            }
++        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7716d3a45577823a7728f8bfe4eb0150bd757af7
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java
+@@ -0,0 +1,45 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.concurrent.atomic.AtomicInteger;
++import org.junit.jupiter.api.Test;
++
++class PacketGuiWindowIdsTest {
++
++    @Test
++    void handsOutConsecutiveIdsWhenNothingIsForbidden() {
++        final AtomicInteger counter = new AtomicInteger(1);
++        assertEquals(1, PacketGuiWindowIds.allocate(counter, 0));
++        assertEquals(2, PacketGuiWindowIds.allocate(counter, 0));
++        assertEquals(3, PacketGuiWindowIds.allocate(counter, 0));
++    }
++
++    @Test
++    void skipsTheWindowIdTheViewerAlreadyHasOpen() {
++        final AtomicInteger counter = new AtomicInteger(5);
++        assertEquals(6, PacketGuiWindowIds.allocate(counter, 5));
++    }
++
++    @Test
++    void neverReturnsTheForbiddenIdAcrossTheWholeRange() {
++        final AtomicInteger counter = new AtomicInteger(1);
++        for (int i = 0; i < PacketGuiWindowIds.MAX_WINDOW_ID * 2; i++) {
++            assertNotEquals(42, PacketGuiWindowIds.allocate(counter, 42));
++        }
++    }
++
++    @Test
++    void rollsOverAtTheMaximumAndNeverReturnsZero() {
++        final AtomicInteger counter = new AtomicInteger(PacketGuiWindowIds.MAX_WINDOW_ID);
++        assertEquals(PacketGuiWindowIds.MAX_WINDOW_ID, PacketGuiWindowIds.allocate(counter, 0));
++        assertEquals(1, PacketGuiWindowIds.allocate(counter, 0));
++
++        final AtomicInteger fresh = new AtomicInteger(1);
++        for (int i = 0; i < PacketGuiWindowIds.MAX_WINDOW_ID * 3; i++) {
++            assertTrue(PacketGuiWindowIds.allocate(fresh, 0) >= 1);
 +        }
 +    }
 +}
