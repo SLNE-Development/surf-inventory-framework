@@ -26,6 +26,9 @@ suspected packet problem — start with:
 -Dinventory-framework.gui-backend.native=off
 ```
 
+That makes the sender report itself unavailable, which in turn falls the whole packet backend back to Bukkit
+inventories.
+
 When a click does not reach a view, log every inbound click and the routing decision taken for it:
 
 ```
@@ -34,9 +37,6 @@ When a click does not reach a view, log every inbound click and the routing deci
 
 Each click then produces one INFO line naming the window id, slot, button, click type, the computed repair
 scope and whether it was routed into the click pipeline or denied.
-
-That makes the sender report itself unavailable, which in turn falls the whole packet backend back to Bukkit
-inventories.
 
 ## How availability is decided
 
@@ -85,36 +85,60 @@ Startup log lines to look for:
 
 ## Verification checklist
 
-Manual checklist from `AGENTS.md`. Fill in when validating a build on a real server.
+Manual checklist from `AGENTS.md`, extended with the scenarios this backend added. Verified on the live
+SurfCanvas server (Minecraft 26.2, `canvas-26.2-883`) with `-Dinventory-framework.gui-backend=packet`, against
+surf-api `3.34.0` built from `1.0.5-packet-guis-SNAPSHOT`.
+
+Rows marked *(log)* were confirmed from the `-Dinventory-framework.gui-backend.debug-clicks=true` output rather
+than by watching the screen.
 
 | Szenario | Erwartet | Geprüft am | Ergebnis |
 |---|---|---|---|
-| Opening a simple GUI | Window opens with the configured title and size | | |
-| Displaying all top slots | Every rendered slot shows its item | | |
+| Packet mode activates | Startup logs `Packet mode enabled`, not the Bukkit fallback | 2026-07-28 | OK — probe reported Minecraft 26.2, PacketEvents V_26_2, native sender active |
+| Opening a simple GUI | Window opens with the configured title and size | 2026-07-28 | OK — `/protect` and `/shop` open |
+| Displaying all top slots | Every rendered slot shows its item | 2026-07-28 | OK |
 | Title rendering | Plain and Adventure component titles both render | | |
-| Rows/size rendering | 1–6 row chests all open at the right size | | |
-| Clicking a normal button | The view's click handler runs once | | |
-| Refresh/rerender after click | Changed slots update, unchanged ones are not resent | | |
-| Page/screen replacement | Navigating between views replaces the window cleanly | | |
+| Rows/size rendering | 1–6 row chests all open at the right size | 2026-07-28 | OK for 3, 5 and 6 rows (topSize 27/45/54) *(log)*; 1, 2 and 4 rows not exercised |
+| Clicking a normal button | The view's click handler runs once | 2026-07-28 | OK |
+| Refresh/rerender after click | Changed slots update, unchanged ones are not resent | 2026-07-29 | OK — no visible problem after the render-plan rewrite |
+| Page/screen replacement | Navigating between views replaces the window cleanly | 2026-07-28 | OK — chains of views navigated without a stuck window |
+| Opening a GUI while another GUI is open | The new window replaces the old one; no command has to be repeated | 2026-07-29 | OK — was broken before `39a19c8`, fixed and re-tested |
+| Outside click | Reaches the view; surf-api uses it for back navigation | 2026-07-28 | OK — was broken before `3bf6ef0`; client sends `THROW`/slot -999 |
+| Bottom inventory click | Delivered to the view as an entity-container click | 2026-07-28 | OK — `slot=88, bottom=true, scope=PLAYER_INVENTORY, routed` *(log)* |
+| Double-click denial | Denied, no callback, full resync | 2026-07-28 | OK — `PICKUP_ALL -> denied, full resync` *(log)* |
+| PacketLore on inventory items | An enchanted item in the viewer's inventory shows its lore in the GUI, exactly once | 2026-07-29 | OK — decorated once, also after the mirror was removed in `891b7c0` |
 | Close handling | ESC closes the GUI and fires `onClose` exactly once | | |
 | Player quit cleanup | Session and viewer are removed, `onClose` fires once | | |
 | External inventory open cleanup | Opening a real chest finalizes the packet session | | |
-| Shift-click denial | **Changed:** top-slot shift-clicks are *routed* to the view, not denied; the packet is still cancelled | | |
-| Number-key denial | **Changed:** top-slot number-key swaps are *routed* to the view; the packet is still cancelled | | |
+| Shift-click | **Changed:** top-slot shift-clicks are *routed* to the view, not denied; the packet is still cancelled | | |
+| Number-key | **Changed:** top-slot number-key swaps are *routed* to the view; the packet is still cancelled | | |
+| Offhand swap | **Changed:** routed to the view; the packet is still cancelled | | |
 | Drag denial | Denied, no callback, full resync | | |
-| Double-click denial | Denied, no callback, full resync | | |
-| Drop denial | Denied, no callback, full resync | | |
-| Offhand swap denial | **Changed:** routed to the view; the packet is still cancelled | | |
+| Drop-key denial | Denied, no callback, full resync | | |
 | Cursor ghost-item correction | No item sticks to the cursor after any click | | |
-| Bottom inventory visual correctness | The player's own items render correctly and snap back when clicked | | |
-| No GUI display items in real server inventory contents | `/invsee` or a dump shows no GUI icons in any real inventory | | |
+| Bottom inventory visual correctness | The viewer's own items render correctly and snap back when clicked | | |
+| No GUI display items in real server inventory contents | `/invsee` or an inventory dump shows no GUI icons in any real inventory | | |
 | Window id collision | Opening a GUI while a real chest is open closes the chest and never reuses its window id | | |
 | World change / respawn | Session is finalized, no stale viewer keeps receiving GUI packets | | |
 
-The four rows marked **Changed** deviate from the original AGENTS.md expectation. Those click modes are
-deliberately routed into the click API rather than denied, because the packet is already cancelled at the
-listener, so nothing vanilla can mutate. What *is* denied is drag, drop, double-click and any unrecognised
-mode.
+The rows marked **Changed** deviate from the original AGENTS.md expectation. Those click modes are deliberately
+routed into the click API rather than denied, because the packet is already cancelled at the listener, so
+nothing vanilla can mutate. What *is* denied is drag, the drop key, double-click and any unrecognised mode.
+
+### Still open
+
+The empty rows have not been exercised. Two of them are worth clearing before this is considered done:
+
+- **No GUI display items in real server inventory contents.** This is the claim the whole backend exists to
+  make, and it is the one row nobody has checked. Open a GUI, then have a second player or a console command
+  dump the viewer's inventory and confirm no GUI icon appears in it.
+- **Window id collision.** The guard in `PacketGuiWindowIds` is unit-tested, but the end-to-end path — open a
+  real chest, then open a GUI — has only been reasoned about, never run.
+
+The remaining gaps are the denial modes (drag, drop key, offhand swap, number key), lifecycle cleanup on quit
+and world change, and cursor correction. Each is a single deliberate action on a server with
+`-Dinventory-framework.gui-backend.debug-clicks=true` enabled, which prints the routing decision for every
+click.
 
 ## Where the rendered items come from
 
