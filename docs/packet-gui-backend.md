@@ -26,6 +26,15 @@ suspected packet problem — start with:
 -Dinventory-framework.gui-backend.native=off
 ```
 
+When a click does not reach a view, log every inbound click and the routing decision taken for it:
+
+```
+-Dinventory-framework.gui-backend.debug-clicks=true
+```
+
+Each click then produces one INFO line naming the window id, slot, button, click type, the computed repair
+scope and whether it was routed into the click pipeline or denied.
+
 That makes the sender report itself unavailable, which in turn falls the whole packet backend back to Bukkit
 inventories.
 
@@ -58,8 +67,14 @@ Startup log lines to look for:
   clicks: the click is delivered as an entity-container click, and a handler that calls
   `setCancelled(false)` **and** changes `clickOrigin.currentItem` gets that item written back to the real
   slot. Vanilla pickup/swap/quick-move semantics are deliberately not emulated.
-- **Drag, drop, double-click and unknown click modes are denied.** They are cancelled and answered with a full
-  resync; no view callback runs for them. Only a plain pickup on slot `-999` counts as an outside click.
+- **Drag, double-click, the drop key and unknown click modes are denied.** They are cancelled and answered
+  with a full resync; no view callback runs for them.
+- **Outside clicks are routed.** The protocol has two wire forms for them, and both are accepted on a negative
+  slot: `PICKUP` (mode 0) when the player holds an item, and `THROW` (mode 4) when the cursor is empty. A
+  packet GUI never puts anything on the real cursor, so in practice the client always sends the `THROW` form.
+  The negative slot is what separates these from their in-window meaning — `THROW` on a real slot is the drop
+  key and stays denied, and drag (`QUICK_CRAFT`) carries a negative slot too but is never treated as a click.
+  Consumers see such a click as `ClickType.LEFT`/`RIGHT` with `SlotType.OUTSIDE`, matching the Bukkit backend.
 - **`RenderContext#getInventory()` throws** `UnsupportedOperationException` in packet mode. Probe with
   `RenderContext#isBackedByRealInventory()` first.
 - **`SlotClickContext#getClickOrigin()` returns a synthesized `InventoryClickEvent`.** Item access,
