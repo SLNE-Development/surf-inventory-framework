@@ -372,10 +372,10 @@ index d73ddb29859761e6505b001fb4d303f953cb99e3..686664b4211880e0dc7651cebda4e66c
  import org.jetbrains.annotations.UnmodifiableView;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..4a65fe5083774dc33e9601abfbc89bd644a012b5
+index 0000000000000000000000000000000000000000..0bcf210d460ef6ec23a92fc658904b852e8f50d2
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,118 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -475,34 +475,14 @@ index 0000000000000000000000000000000000000000..4a65fe5083774dc33e9601abfbc89bd6
 +        return origin.getHotbarButton();
 +    }
 +
-+    /**
-+     * @throws UnsupportedOperationException always — a packet GUI has no real inventory, and returning the
-+     * player's own view here would let GUI display items be written into it.
-+     */
-+    @Override
-+    public @NotNull Inventory getInventory() {
-+        throw new UnsupportedOperationException(
-+                "A packet GUI has no real Bukkit Inventory. Use SlotClickContext#getClickedContainer instead.");
-+    }
-+
-+    /**
-+     * @throws UnsupportedOperationException always — see {@link #getInventory()}.
-+     */
-+    @Override
-+    public @NotNull ItemStack getCursor() {
-+        throw new UnsupportedOperationException(
-+                "A packet GUI drives a virtual cursor. Reading the real server-side cursor is not supported.");
-+    }
-+
-+    /**
-+     * @throws UnsupportedOperationException always — writing the real cursor would turn a GUI display item
-+     * into a real, droppable item.
-+     */
-+    @Override
-+    public void setCursor(@Nullable ItemStack stack) {
-+        throw new UnsupportedOperationException(
-+                "A packet GUI drives a virtual cursor. Writing the real server-side cursor is not supported.");
-+    }
++    // getInventory(), getCursor(), setCursor() and getView() are deliberately NOT overridden: the whole point
++    // of this class is that consumers compiled against the Bukkit backend can keep calling InventoryClickEvent
++    // methods without a rewrite, so nothing here may throw. They resolve against the player's own view.
++    //
++    // Reading is harmless - in packet mode the server-side cursor is empty and the top inventory is the
++    // player's crafting grid. Writing through them (setCursor(...), getInventory().setItem(...)) does reach
++    // real server-side state and must not be used from a packet GUI handler; see the note on
++    // SlotClickContext#getClickOrigin().
 +
 +    @Override
 +    public boolean isCancelled() {
@@ -735,7 +715,7 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..992fbb75c57e056a275b5d48f0817a4e
      }
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
-index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..94ef0907fb4d553804c4687207b0e8b0318218c2 100644
+index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..95601e57489215ddf2641f413a690b91b8bcfa07 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 @@ -5,11 +5,8 @@ import me.devnatan.inventoryframework.ViewContainer;
@@ -762,7 +742,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..94ef0907fb4d553804c4687207b0e8b0
  
      @ApiStatus.Internal
      public SlotClickContext(
-@@ -32,30 +30,67 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -32,30 +30,72 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
              @Nullable Component clickedComponent,
              @NotNull InventoryClickEvent clickOrigin,
              boolean combined) {
@@ -810,10 +790,15 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..94ef0907fb4d553804c4687207b0e8b0
 +     * <p>
 +     * On that synthesized event {@code getCurrentItem}, {@code setCurrentItem}, {@code getClickedInventory},
 +     * {@code isCancelled}, {@code setCancelled}, {@code getRawSlot}, {@code getSlot}, {@code getSlotType},
-+     * {@code getAction}, {@code getHotbarButton} and {@code getClick} are served from the packet click, with
-+     * {@code getAction} being a best-effort mapping. {@code getInventory()}, {@code getCursor()} and
-+     * {@code setCursor(...)} throw {@link UnsupportedOperationException}: a packet GUI has no real inventory,
-+     * and writing the real cursor would turn a GUI display item into a real one.
++     * {@code getAction}, {@code getHotbarButton} and {@code getClick} are served from the packet click and
++     * never touch a real server-side inventory; {@code getAction} is a best-effort mapping.
++     * <p>
++     * The remaining inherited accessors are left intact so that code written for the Bukkit backend keeps
++     * working, but they resolve against the player's own inventory view, because a packet GUI has no real
++     * inventory of its own. Reading them is harmless. Writing through them - {@code setCursor(...)} or
++     * {@code getInventory().setItem(...)} - does reach real server-side state and would turn a GUI display
++     * item into a real, droppable one, so a packet GUI handler must not do that. Use
++     * {@link #getClickedContainer()} and {@code setCurrentItem} instead.
 +     * <p>
 +     * The return type is kept as {@link InventoryClickEvent} for binary compatibility with existing
 +     * consumers compiled against the classic backend.
@@ -834,7 +819,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..94ef0907fb4d553804c4687207b0e8b0
      }
  
      /**
-@@ -84,12 +119,13 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -84,12 +124,13 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      @Override
      public final void setCancelled(boolean cancelled) {
          this.cancelled = cancelled;
@@ -850,7 +835,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..94ef0907fb4d553804c4687207b0e8b0
      }
  
      @Override
-@@ -99,42 +135,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -99,42 +140,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
  
      @Override
      public final boolean isLeftClick() {
@@ -901,7 +886,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..94ef0907fb4d553804c4687207b0e8b0
      }
  
      @Override
-@@ -176,4 +212,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -176,4 +217,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      public final boolean isCombined() {
          return combined;
      }
@@ -1206,10 +1191,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c979a67ba880405a887526d7b98854d87f2c75de
+index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896d97f4b4e
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1459 @@
+@@ -0,0 +1,1472 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1243,6 +1228,7 @@ index 0000000000000000000000000000000000000000..c979a67ba880405a887526d7b98854d8
 +import me.devnatan.inventoryframework.internal.GuiBackend;
 +import me.devnatan.inventoryframework.pipeline.StandardPipelinePhases;
 +import org.bukkit.Bukkit;
++import org.bukkit.Material;
 +import org.bukkit.entity.Entity;
 +import org.bukkit.entity.Player;
 +import org.bukkit.event.inventory.InventoryAction;
@@ -1750,17 +1736,7 @@ index 0000000000000000000000000000000000000000..c979a67ba880405a887526d7b98854d8
 +    }
 +
 +    private static int mapPlayerWindowSlotToOpenGuiSlot(int topSize, int playerWindowSlot) {
-+        if (playerWindowSlot >= PacketInventoryConstants.ITEMS_START
-+                && playerWindowSlot < PacketInventoryConstants.HOTBAR_START) {
-+            return topSize + (playerWindowSlot - PacketInventoryConstants.ITEMS_START);
-+        }
-+
-+        if (playerWindowSlot >= PacketInventoryConstants.HOTBAR_START
-+                && playerWindowSlot < PacketInventoryConstants.HOTBAR_START + 9) {
-+            return topSize + 27 + (playerWindowSlot - PacketInventoryConstants.HOTBAR_START);
-+        }
-+
-+        return -1;
++        return PacketInventoryConstants.playerWindowSlotToGuiContainerSlot(topSize, playerWindowSlot);
 +    }
 +
 +    void trackCursor(User user, com.github.retrooper.packetevents.protocol.item.ItemStack item) {
@@ -1911,7 +1887,6 @@ index 0000000000000000000000000000000000000000..c979a67ba880405a887526d7b98854d8
 +
 +        final PacketGuiRender render = PacketGuiRender.from(session.container(), session.viewer().getId());
 +        final PacketGuiRender previous = session.appliedRender();
-+        session.currentRender(render);
 +        final boolean reopen = forceReopen || !render.sameWindow(previous);
 +        final boolean sendFullWindow = hardResync || reopen || previous == null;
 +
@@ -2130,18 +2105,42 @@ index 0000000000000000000000000000000000000000..c979a67ba880405a887526d7b98854d8
 +        return item == null ? null : item.clone();
 +    }
 +
-+    private static void applyPlayerInventoryItem(Player player, int playerWindowSlot, ItemStack item) {
++    /**
++     * Writes an item back into the viewer's real inventory. Kept symmetric with
++     * {@link #playerInventoryItem(Player, int)}: every slot that can be read can also be written, and a slot
++     * that cannot be mapped is reported instead of silently dropped.
++     */
++    private void applyPlayerInventoryItem(Player player, int playerWindowSlot, ItemStack item) {
 +        final PlayerInventory inventory = player.getInventory();
-+        if (playerWindowSlot >= PacketInventoryConstants.ITEMS_START
-+                && playerWindowSlot < PacketInventoryConstants.HOTBAR_START) {
-+            inventory.setItem(playerWindowSlot, item);
++        switch (playerWindowSlot) {
++            case PacketInventoryConstants.SLOT_HELMET:
++                inventory.setHelmet(item);
++                return;
++            case PacketInventoryConstants.SLOT_CHESTPLATE:
++                inventory.setChestplate(item);
++                return;
++            case PacketInventoryConstants.SLOT_LEGGINGS:
++                inventory.setLeggings(item);
++                return;
++            case PacketInventoryConstants.SLOT_BOOTS:
++                inventory.setBoots(item);
++                return;
++            case PacketInventoryConstants.SLOT_OFFHAND:
++                inventory.setItemInOffHand(item == null ? new ItemStack(Material.AIR) : item);
++                return;
++            default:
++                break;
++        }
++
++        final int inventorySlot = PacketInventoryConstants.containerSlotToPlayerInventorySlot(playerWindowSlot);
++        if (inventorySlot < 0) {
++            owner.getLogger()
++                    .warning("Refusing to write packet GUI player inventory slot " + playerWindowSlot
++                            + ": the slot cannot be mapped to a Bukkit inventory index.");
 +            return;
 +        }
 +
-+        if (playerWindowSlot >= PacketInventoryConstants.HOTBAR_START
-+                && playerWindowSlot < PacketInventoryConstants.HOTBAR_START + 9) {
-+            inventory.setItem(playerWindowSlot - PacketInventoryConstants.HOTBAR_START, item);
-+        }
++        inventory.setItem(inventorySlot, item);
 +    }
 +
 +    private static ItemStack playerInventoryItem(Player player, int playerWindowSlot) {
@@ -2305,7 +2304,6 @@ index 0000000000000000000000000000000000000000..c979a67ba880405a887526d7b98854d8
 +        }
 +
 +        sessions.remove(session.viewerId(), session);
-+        session.clearPacketItemCache();
 +        session.viewerInventory().resetOpenWindow();
 +        if (sendClosePacket) {
 +            try {
@@ -2898,10 +2896,10 @@ index 0000000000000000000000000000000000000000..79f9d50878de8ae5c091f17c8a7e92bc
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..358fcab62856c545272bc3c371c36c9df2209fcd
+index 0000000000000000000000000000000000000000..c3fc8e898b89e93e21d9a4ff24b8630f6849bd14
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,475 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
@@ -2909,7 +2907,6 @@ index 0000000000000000000000000000000000000000..358fcab62856c545272bc3c371c36c9d
 +import java.lang.reflect.Method;
 +import java.util.ArrayList;
 +import java.util.List;
-+import java.util.Objects;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.concurrent.ConcurrentMap;
 +import org.bukkit.entity.Player;
@@ -2931,7 +2928,7 @@ index 0000000000000000000000000000000000000000..358fcab62856c545272bc3c371c36c9d
 +    private final Constructor<?> setCursorItemConstructor;
 +    private final Constructor<?> setPlayerInventoryConstructor;
 +    private final ConcurrentMap<Class<?>, Field> connectionFields = new ConcurrentHashMap<>();
-+    private final ConcurrentMap<SendMethodKey, Method> sendMethods = new ConcurrentHashMap<>();
++    private final ConcurrentMap<Class<?>, Method> sendMethods = new ConcurrentHashMap<>();
 +
 +    private PacketGuiNativeOutboundSender() {
 +        try {
@@ -3129,7 +3126,7 @@ index 0000000000000000000000000000000000000000..358fcab62856c545272bc3c371c36c9d
 +    private void send(Player player, Object packet) {
 +        final Object handle = handle(player);
 +        final Object connection = connection(handle);
-+        final Method send = sendMethod(connection.getClass(), packet.getClass());
++        final Method send = sendMethod(connection.getClass());
 +        try {
 +            send.invoke(connection, packet);
 +        } catch (final ReflectiveOperationException exception) {
@@ -3186,9 +3183,11 @@ index 0000000000000000000000000000000000000000..358fcab62856c545272bc3c371c36c9d
 +        throw new IllegalStateException("Failed to discover native player connection");
 +    }
 +
-+    private Method sendMethod(Class<?> connectionClass, Class<?> concretePacketClass) {
-+        return sendMethods.computeIfAbsent(new SendMethodKey(connectionClass, concretePacketClass), key -> {
-+            final Method method = findSendMethod(key.connectionClass, key.concretePacketClass);
++    private Method sendMethod(Class<?> connectionClass) {
++        return sendMethods.computeIfAbsent(connectionClass, type -> {
++            // Resolve against the Packet supertype so one cached method serves every packet this sender emits,
++            // instead of one entry per concrete packet class.
++            final Method method = findSendMethod(type, packetClass);
 +            if (method == null) {
 +                throw new IllegalStateException("Failed to find native player connection send method");
 +            }
@@ -3273,37 +3272,6 @@ index 0000000000000000000000000000000000000000..358fcab62856c545272bc3c371c36c9d
 +        }
 +
 +        throw new NoSuchFieldException(name);
-+    }
-+
-+    private static final class SendMethodKey {
-+
-+        private final Class<?> connectionClass;
-+        private final Class<?> concretePacketClass;
-+
-+        private SendMethodKey(Class<?> connectionClass, Class<?> concretePacketClass) {
-+            this.connectionClass = connectionClass;
-+            this.concretePacketClass = concretePacketClass;
-+        }
-+
-+        @Override
-+        public boolean equals(Object other) {
-+            if (this == other) {
-+                return true;
-+            }
-+
-+            if (!(other instanceof SendMethodKey)) {
-+                return false;
-+            }
-+
-+            final SendMethodKey that = (SendMethodKey) other;
-+            return connectionClass.equals(that.connectionClass)
-+                    && concretePacketClass.equals(that.concretePacketClass);
-+        }
-+
-+        @Override
-+        public int hashCode() {
-+            return Objects.hash(connectionClass, concretePacketClass);
-+        }
 +    }
 +
 +    static final class InitializationResult {
@@ -3537,10 +3505,10 @@ index 0000000000000000000000000000000000000000..89cf420ff84c58826d06cbe9d92c4f9b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..be445839c0fedf34bea198e2b3aa3d8a6780a7c9
+index 0000000000000000000000000000000000000000..7a3fda77476e1cdd99a01d98c7ca97f8d2b9be91
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,71 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.Objects;
@@ -3559,16 +3527,6 @@ index 0000000000000000000000000000000000000000..be445839c0fedf34bea198e2b3aa3d8a
 +        this.title = title;
 +        this.rows = rows;
 +        this.topItems = topItems;
-+    }
-+
-+    static PacketGuiRender from(PacketViewContainer container) {
-+        final ItemStack[] topItems = container.snapshotItems();
-+        final Object rawTitle = container.getRawTitle(null);
-+        return new PacketGuiRender(
-+                rawTitle,
-+                titleComponent(rawTitle),
-+                Math.max(1, container.getRowsCount()),
-+                topItems);
 +    }
 +
 +    static PacketGuiRender from(PacketViewContainer container, String viewerId) {
@@ -3596,10 +3554,6 @@ index 0000000000000000000000000000000000000000..be445839c0fedf34bea198e2b3aa3d8a
 +    ItemStack bukkitItem(int slot) {
 +        final ItemStack item = topItems[slot];
 +        return item == null ? null : item.clone();
-+    }
-+
-+    ItemStack rawBukkitItem(int slot) {
-+        return topItems[slot];
 +    }
 +
 +    boolean sameWindow(PacketGuiRender other) {
@@ -3666,10 +3620,10 @@ index 0000000000000000000000000000000000000000..bfe5e483593193cc8e62027a4e2684e0
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d1936ea5e42a894eca52d28ebc7a0dae57b1c084
+index 0000000000000000000000000000000000000000..96ae373865eef6117ae36003c3199b6d63e248f2
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,265 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
@@ -3677,9 +3631,7 @@ index 0000000000000000000000000000000000000000..d1936ea5e42a894eca52d28ebc7a0dae
 +import java.util.UUID;
 +import me.devnatan.inventoryframework.BukkitViewer;
 +import me.devnatan.inventoryframework.context.IFRenderContext;
-+import org.bukkit.Material;
 +import org.bukkit.entity.Player;
-+import org.bukkit.inventory.ItemStack;
 +
 +final class PacketGuiSession {
 +
@@ -3690,8 +3642,6 @@ index 0000000000000000000000000000000000000000..d1936ea5e42a894eca52d28ebc7a0dae
 +    private final int windowId;
 +    private final PacketViewContainer container;
 +    private final PacketViewerInventory viewerInventory;
-+    private CachedPacketItem[] topItemCache = new CachedPacketItem[0];
-+    private PacketGuiRender currentRender;
 +    private PacketGuiRender appliedRender;
 +    private boolean renderScheduled;
 +    private boolean scheduledForceReopen;
@@ -3750,14 +3700,6 @@ index 0000000000000000000000000000000000000000..d1936ea5e42a894eca52d28ebc7a0dae
 +
 +    synchronized PacketViewerInventory viewerInventory() {
 +        return viewerInventory;
-+    }
-+
-+    synchronized PacketGuiRender currentRender() {
-+        return currentRender;
-+    }
-+
-+    synchronized void currentRender(PacketGuiRender currentRender) {
-+        this.currentRender = currentRender;
 +    }
 +
 +    synchronized PacketGuiRender appliedRender() {
@@ -3842,55 +3784,6 @@ index 0000000000000000000000000000000000000000..d1936ea5e42a894eca52d28ebc7a0dae
 +     */
 +    synchronized void clearScheduledRender() {
 +        renderScheduled = false;
-+    }
-+
-+    synchronized com.github.retrooper.packetevents.protocol.item.ItemStack packetItem(PacketGuiRender render, int slot) {
-+        final PacketItemSnapshot snapshot = packetItemSnapshot(render, slot);
-+        if (snapshot.cached()) {
-+            return snapshot.cachedPacketItem();
-+        }
-+
-+        final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem =
-+                PacketItemConverter.toPacket(snapshot.bukkitItem());
-+        cachePacketItem(snapshot, packetItem);
-+        return PacketItemConverter.copy(packetItem);
-+    }
-+
-+    synchronized PacketItemSnapshot packetItemSnapshot(PacketGuiRender render, int slot) {
-+        ensureTopItemCache(render.size());
-+
-+        final ItemStack item = render.rawBukkitItem(slot);
-+        final CachedPacketItem cached = topItemCache[slot];
-+        if (cached != null && cached.matches(item)) {
-+            return PacketItemSnapshot.cached(render.size(), slot, cached.packetItem);
-+        }
-+
-+        return PacketItemSnapshot.uncached(render.size(), slot, item);
-+    }
-+
-+    synchronized void cachePacketItem(
-+            PacketItemSnapshot snapshot, com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
-+        if (snapshot == null || snapshot.cached()) {
-+            return;
-+        }
-+
-+        ensureTopItemCache(snapshot.renderSize());
-+        if (snapshot.slot() < 0 || snapshot.slot() >= topItemCache.length) {
-+            return;
-+        }
-+
-+        topItemCache[snapshot.slot()] =
-+                new CachedPacketItem(snapshot.sourceReference(), snapshot.bukkitItem(), packetItem);
-+    }
-+
-+    synchronized void clearPacketItemCache() {
-+        topItemCache = new CachedPacketItem[0];
-+    }
-+
-+    private void ensureTopItemCache(int size) {
-+        if (topItemCache.length != size) {
-+            topItemCache = new CachedPacketItem[size];
-+        }
 +    }
 +
 +    private void scheduleTargetedRepairs(PacketGuiRepairScope scope, PacketGuiClick click) {
@@ -3995,110 +3888,6 @@ index 0000000000000000000000000000000000000000..d1936ea5e42a894eca52d28ebc7a0dae
 +            return playerSlotRepairs;
 +        }
 +    }
-+
-+    static final class PacketItemSnapshot {
-+
-+        private final int renderSize;
-+        private final int slot;
-+        private final ItemStack sourceReference;
-+        private final ItemStack bukkitItem;
-+        private final boolean cached;
-+        private final com.github.retrooper.packetevents.protocol.item.ItemStack cachedPacketItem;
-+
-+        private PacketItemSnapshot(
-+                int renderSize,
-+                int slot,
-+                ItemStack sourceReference,
-+                ItemStack bukkitItem,
-+                boolean cached,
-+                com.github.retrooper.packetevents.protocol.item.ItemStack cachedPacketItem) {
-+            this.renderSize = renderSize;
-+            this.slot = slot;
-+            this.sourceReference = sourceReference;
-+            this.bukkitItem = bukkitItem;
-+            this.cached = cached;
-+            this.cachedPacketItem = PacketItemConverter.copy(cachedPacketItem);
-+        }
-+
-+        static PacketItemSnapshot cached(
-+                int renderSize,
-+                int slot,
-+                com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
-+            return new PacketItemSnapshot(renderSize, slot, null, null, true, packetItem);
-+        }
-+
-+        static PacketItemSnapshot uncached(int renderSize, int slot, ItemStack item) {
-+            return new PacketItemSnapshot(
-+                    renderSize,
-+                    slot,
-+                    item,
-+                    item == null ? null : item.clone(),
-+                    false,
-+                    com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY);
-+        }
-+
-+        int renderSize() {
-+            return renderSize;
-+        }
-+
-+        int slot() {
-+            return slot;
-+        }
-+
-+        ItemStack sourceReference() {
-+            return sourceReference;
-+        }
-+
-+        ItemStack bukkitItem() {
-+            return bukkitItem;
-+        }
-+
-+        boolean cached() {
-+            return cached;
-+        }
-+
-+        com.github.retrooper.packetevents.protocol.item.ItemStack cachedPacketItem() {
-+            return PacketItemConverter.copy(cachedPacketItem);
-+        }
-+    }
-+
-+    private static final class CachedPacketItem {
-+
-+        private final ItemStack sourceReference;
-+        private final ItemStack bukkitItem;
-+        private final Material type;
-+        private final int amount;
-+        private final com.github.retrooper.packetevents.protocol.item.ItemStack packetItem;
-+
-+        private CachedPacketItem(
-+                ItemStack sourceReference,
-+                ItemStack bukkitItem,
-+                com.github.retrooper.packetevents.protocol.item.ItemStack packetItem) {
-+            this.sourceReference = sourceReference;
-+            this.bukkitItem = bukkitItem == null ? null : bukkitItem.clone();
-+            this.type = PacketItemConverter.isEmpty(bukkitItem) ? Material.AIR : bukkitItem.getType();
-+            this.amount = PacketItemConverter.isEmpty(bukkitItem) ? 0 : bukkitItem.getAmount();
-+            this.packetItem = PacketItemConverter.copy(packetItem);
-+        }
-+
-+        private boolean matches(ItemStack item) {
-+            if (item == sourceReference) {
-+                return true;
-+            }
-+
-+            if (PacketItemConverter.isEmpty(item) && PacketItemConverter.isEmpty(bukkitItem)) {
-+                return true;
-+            }
-+
-+            if (PacketItemConverter.isEmpty(item) || PacketItemConverter.isEmpty(bukkitItem)) {
-+                return false;
-+            }
-+
-+            return item.getType() == type
-+                    && item.getAmount() == amount
-+                    && PacketItemConverter.sameDisplayItem(bukkitItem, item);
-+        }
-+    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java
 new file mode 100644
@@ -4148,10 +3937,10 @@ index 0000000000000000000000000000000000000000..3552d4e9df03a9e574cd944611293013
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..afc341fc07b9f309a53a9602f43c712b47d0cb07
+index 0000000000000000000000000000000000000000..e43f86319e18629837065af50a00b55afebaaa33
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,94 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +final class PacketInventoryConstants {
@@ -4191,6 +3980,41 @@ index 0000000000000000000000000000000000000000..afc341fc07b9f309a53a9602f43c712b
 +        }
 +    }
 +
++    /**
++     * Maps a slot index of an open chest-style GUI window to the corresponding player-container slot.
++     *
++     * <p>A chest window is laid out as {@code topSize} container slots, then the 27 main inventory slots, then
++     * the 9 hotbar slots.
++     *
++     * @return The player-container slot, or {@code -1} when the index is not part of the player section.
++     */
++    static int guiContainerSlotToPlayerWindowSlot(int topSize, int containerSlot) {
++        final int relativeSlot = containerSlot - topSize;
++        if (relativeSlot < 0) return -1;
++        if (relativeSlot < 27) return ITEMS_START + relativeSlot;
++        if (relativeSlot < 36) return HOTBAR_START + (relativeSlot - 27);
++
++        return -1;
++    }
++
++    /**
++     * The inverse of {@link #guiContainerSlotToPlayerWindowSlot(int, int)}.
++     *
++     * @return The GUI window slot, or {@code -1} for slots that are not visible in the window (armour, offhand
++     * and the crafting grid).
++     */
++    static int playerWindowSlotToGuiContainerSlot(int topSize, int playerWindowSlot) {
++        if (playerWindowSlot >= ITEMS_START && playerWindowSlot < HOTBAR_START) {
++            return topSize + (playerWindowSlot - ITEMS_START);
++        }
++
++        if (playerWindowSlot >= HOTBAR_START && playerWindowSlot < HOTBAR_START + 9) {
++            return topSize + 27 + (playerWindowSlot - HOTBAR_START);
++        }
++
++        return -1;
++    }
++
 +    static int containerSlotToPlayerInventorySlot(int containerSlot) {
 +        if (containerSlot >= ITEMS_START && containerSlot < HOTBAR_START) return containerSlot;
 +        if (containerSlot >= HOTBAR_START && containerSlot < HOTBAR_START + 9) return containerSlot - HOTBAR_START;
@@ -4213,10 +4037,10 @@ index 0000000000000000000000000000000000000000..afc341fc07b9f309a53a9602f43c712b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..826c90cd7aa87ba859946727b973b178c1338380
+index 0000000000000000000000000000000000000000..36d89dbbe2e6dfccc773206b109bfac77e5e0bd2
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,217 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import io.github.retrooper.packetevents.util.SpigotConversionUtil;
@@ -4248,14 +4072,6 @@ index 0000000000000000000000000000000000000000..826c90cd7aa87ba859946727b973b178
 +        return converted == null || converted.isEmpty()
 +                ? com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY
 +                : converted.copy();
-+    }
-+
-+    static ItemStack toBukkit(com.github.retrooper.packetevents.protocol.item.ItemStack item) {
-+        if (item == null || item.isEmpty()) {
-+            return null;
-+        }
-+
-+        return SpigotConversionUtil.toBukkitItemStack(item.copy());
 +    }
 +
 +    static com.github.retrooper.packetevents.protocol.item.ItemStack copy(
@@ -4427,26 +4243,27 @@ index 0000000000000000000000000000000000000000..826c90cd7aa87ba859946727b973b178
 +        }
 +    }
 +
++    /**
++     * Marks a component as explicitly non-italic so Minecraft does not apply its default italic styling to item
++     * names and lore.
++     *
++     * <p>Only the root style is touched, and only when it does not already carry an explicit decision: children
++     * inherit the root's decoration, so rewriting them would destroy italics a view set on purpose.
++     */
 +    private static Component forceNonItalic(Component component) {
-+        Component normalized = component.decoration(TextDecoration.ITALIC, TextDecoration.State.FALSE);
-+        if (normalized.children().isEmpty()) {
-+            return normalized;
++        if (component.decoration(TextDecoration.ITALIC) != TextDecoration.State.NOT_SET) {
++            return component;
 +        }
 +
-+        final List<Component> children = normalized.children();
-+        final List<Component> normalizedChildren = new ArrayList<>(children.size());
-+        for (final Component child : children) {
-+            normalizedChildren.add(forceNonItalic(child));
-+        }
-+        return normalized.children(normalizedChildren);
++        return component.decoration(TextDecoration.ITALIC, TextDecoration.State.FALSE);
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..2a79e2d90b75a04436eda3c54780c226886d2501
+index 0000000000000000000000000000000000000000..390fed3cabff5e3872e7eaedd211c8f7e8400cd7
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,236 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.Map;
@@ -4499,7 +4316,7 @@ index 0000000000000000000000000000000000000000..2a79e2d90b75a04436eda3c54780c226
 +
 +    ItemStack[] snapshotItems() {
 +        synchronized (topItems) {
-+            // Items are cloned on write; preserving references lets the packet cache skip unchanged slots.
++            // Items are cloned on write, so handing out the array itself is safe.
 +            return topItems.clone();
 +        }
 +    }
@@ -4644,15 +4461,6 @@ index 0000000000000000000000000000000000000000..2a79e2d90b75a04436eda3c54780c226
 +        }
 +    }
 +
-+    void changeBaseTitle(@Nullable Object title) {
-+        if (Objects.equals(this.title, title)) {
-+            return;
-+        }
-+
-+        this.title = title;
-+        backend.requestResync(this);
-+    }
-+
 +    @Override
 +    public boolean isEntityContainer() {
 +        return false;
@@ -4694,10 +4502,10 @@ index 0000000000000000000000000000000000000000..2a79e2d90b75a04436eda3c54780c226
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..bf9c47739306bb49d881663b934ec3d44837058d
+index 0000000000000000000000000000000000000000..49c1df0bc324fb4d7f4e71b40dc198ee968a0d54
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,158 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.ArrayList;
@@ -4846,20 +4654,7 @@ index 0000000000000000000000000000000000000000..bf9c47739306bb49d881663b934ec3d4
 +    }
 +
 +    static int mapGuiContainerSlotToPlayerSlot(int topSize, int containerSlot) {
-+        final int relativeSlot = containerSlot - topSize;
-+        if (relativeSlot < 0) {
-+            return -1;
-+        }
-+
-+        if (relativeSlot < 27) {
-+            return PacketInventoryConstants.ITEMS_START + relativeSlot;
-+        }
-+
-+        if (relativeSlot < 36) {
-+            return PacketInventoryConstants.HOTBAR_START + (relativeSlot - 27);
-+        }
-+
-+        return -1;
++        return PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(topSize, containerSlot);
 +    }
 +
 +    private void appendRange(List<com.github.retrooper.packetevents.protocol.item.ItemStack> items, int sourceStart, int amount) {
@@ -5091,10 +4886,10 @@ index 0000000000000000000000000000000000000000..7716d3a45577823a7728f8bfe4eb0150
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b7b81adbc1430fe023c82a742ab5005fa01b64e
+index 0000000000000000000000000000000000000000..662e20f77195cda3a67631e605c9ec6078f44283
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,87 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -5145,6 +4940,40 @@ index 0000000000000000000000000000000000000000..6b7b81adbc1430fe023c82a742ab5005
 +                    slot,
 +                    PacketInventoryConstants.containerSlotToPlayerInventorySlot(containerSlot),
 +                    "round trip failed for player inventory slot " + slot);
++        }
++    }
++
++    @Test
++    void mapsGuiContainerSlotsToPlayerWindowSlots() {
++        assertEquals(9, PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(27, 27));
++        assertEquals(35, PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(27, 53));
++        assertEquals(36, PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(27, 54));
++        assertEquals(44, PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(27, 62));
++        assertEquals(-1, PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(27, 26));
++        assertEquals(-1, PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(27, 63));
++    }
++
++    @Test
++    void mapsPlayerWindowSlotsBackToGuiContainerSlots() {
++        assertEquals(27, PacketInventoryConstants.playerWindowSlotToGuiContainerSlot(27, 9));
++        assertEquals(53, PacketInventoryConstants.playerWindowSlotToGuiContainerSlot(27, 35));
++        assertEquals(54, PacketInventoryConstants.playerWindowSlotToGuiContainerSlot(27, 36));
++        assertEquals(62, PacketInventoryConstants.playerWindowSlotToGuiContainerSlot(27, 44));
++        assertEquals(-1, PacketInventoryConstants.playerWindowSlotToGuiContainerSlot(27, 5));
++        assertEquals(-1, PacketInventoryConstants.playerWindowSlotToGuiContainerSlot(27, 45));
++    }
++
++    @Test
++    void roundTripsGuiAndPlayerWindowSlotsForEveryChestSize() {
++        for (final int topSize : new int[] {9, 18, 27, 36, 45, 54}) {
++            for (int guiSlot = topSize; guiSlot < topSize + 36; guiSlot++) {
++                final int playerWindowSlot =
++                        PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(topSize, guiSlot);
++                assertEquals(
++                        guiSlot,
++                        PacketInventoryConstants.playerWindowSlotToGuiContainerSlot(topSize, playerWindowSlot),
++                        "round trip failed for topSize " + topSize + " gui slot " + guiSlot);
++            }
 +        }
 +    }
 +}
