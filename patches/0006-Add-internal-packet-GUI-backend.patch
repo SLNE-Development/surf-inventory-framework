@@ -1011,10 +1011,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..23049112f36d08a93d851f293fd1288e4fd14c42
+index 0000000000000000000000000000000000000000..4288622baab670cec914570308efa67138ead488
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1250 @@
+@@ -0,0 +1,1252 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1282,12 +1282,14 @@ index 0000000000000000000000000000000000000000..23049112f36d08a93d851f293fd1288e
 +
 +        final int topSize = session.container().getSize();
 +        final PacketGuiRepairScope repairScope = click.repairScope(topSize);
-+        if (click.isOutsideClick()) {
-+            runOnPlayer(session.player(), () -> handlePacketClick(session, click, repairScope));
-+            return;
-+        }
 +
-+        if (repairScope.fullWindow() && !(click.isPlayerInventoryClick(topSize) && click.isShiftClick())) {
++        // Fail closed: everything that is not an explicitly supported interaction is denied without running
++        // user callbacks. Two carve-outs are routed on purpose - genuine outside clicks (views use them for
++        // back navigation) and bottom-inventory shift-clicks (views observe them as entity-container clicks).
++        final boolean routed = click.isOutsideClick()
++                || (click.isPlayerInventoryClick(topSize) && click.isShiftClick())
++                || !repairScope.fullWindow();
++        if (!routed) {
 +            requestRender(session, false, true);
 +            return;
 +        }
@@ -2267,10 +2269,10 @@ index 0000000000000000000000000000000000000000..23049112f36d08a93d851f293fd1288e
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7526b7afe435c3c0ae694a8a2c8345466e156348
+index 0000000000000000000000000000000000000000..79f9d50878de8ae5c091f17c8a7e92bc16acf2d7
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,221 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
@@ -2279,6 +2281,7 @@ index 0000000000000000000000000000000000000000..7526b7afe435c3c0ae694a8a2c834546
 +final class PacketGuiClick {
 +
 +    private static final int OFFHAND_SWAP_BUTTON = 40;
++    private static final int OUTSIDE_SLOT = -999;
 +    private static final int[] EMPTY_CHANGED_SLOTS = new int[0];
 +
 +    private final int windowId;
@@ -2309,6 +2312,20 @@ index 0000000000000000000000000000000000000000..7526b7afe435c3c0ae694a8a2c834546
 +                changedSlots(packet));
 +    }
 +
++    /**
++     * Builds a click directly from its wire values. Only used by tests; the production path goes through
++     * {@link #from(WrapperPlayClientClickWindow)}.
++     */
++    static PacketGuiClick of(
++            int windowId,
++            int slot,
++            int button,
++            WrapperPlayClientClickWindow.WindowClickType clickType,
++            int... changedSlots) {
++        return new PacketGuiClick(
++                windowId, slot, button, clickType, changedSlots == null ? EMPTY_CHANGED_SLOTS : changedSlots);
++    }
++
 +    int windowId() {
 +        return windowId;
 +    }
@@ -2325,8 +2342,15 @@ index 0000000000000000000000000000000000000000..7526b7afe435c3c0ae694a8a2c834546
 +        return changedSlots;
 +    }
 +
++    /**
++     * Whether this is a genuine click outside the window.
++     *
++     * <p>Only a plain pickup (mode 0, button 0 or 1) on slot -999 is an outside click. Drag (QUICK_CRAFT) and
++     * cursor-drop (THROW) packets carry slot -999 as well but are not user-visible clicks; treating them as
++     * outside clicks made a single drag run the click pipeline twice.
++     */
 +    boolean isOutsideClick() {
-+        return slot < 0;
++        return slot == OUTSIDE_SLOT && isPickupClick();
 +    }
 +
 +    boolean isSafeTopClick(int topSize) {
@@ -2405,26 +2429,23 @@ index 0000000000000000000000000000000000000000..7526b7afe435c3c0ae694a8a2c834546
 +        return PacketInventoryConstants.HOTBAR_START + button;
 +    }
 +
++    /**
++     * The Bukkit {@link org.bukkit.event.inventory.ClickType} name for this click.
++     *
++     * <p>Always the name of a real enum constant, so consumers can call {@code ClickType.valueOf(...)} on it
++     * exactly as they can with the Bukkit backend. PacketEvents' own protocol names must never leak here.
++     */
 +    String clickIdentifier() {
-+        if (isPickupClick()) {
-+            if (button == 0) return "LEFT";
-+            if (button == 1) return "RIGHT";
++        if (isPickupClick()) return button == 0 ? "LEFT" : "RIGHT";
++        if (isQuickMoveClick()) return button == 0 ? "SHIFT_LEFT" : "SHIFT_RIGHT";
++        if (isSwapClick()) return button == OFFHAND_SWAP_BUTTON ? "SWAP_OFFHAND" : "NUMBER_KEY";
++        if (isCloneClick()) return "MIDDLE";
++        if (clickType == WrapperPlayClientClickWindow.WindowClickType.THROW) {
++            return button == 0 ? "DROP" : "CONTROL_DROP";
 +        }
++        if (clickType == WrapperPlayClientClickWindow.WindowClickType.PICKUP_ALL) return "DOUBLE_CLICK";
 +
-+        if (isQuickMoveClick()) {
-+            if (button == 0) return "SHIFT_LEFT";
-+            if (button == 1) return "SHIFT_RIGHT";
-+        }
-+
-+        if (isSwapClick()) {
-+            return button == OFFHAND_SWAP_BUTTON ? "SWAP_OFFHAND" : "NUMBER_KEY";
-+        }
-+
-+        if (isCloneClick()) {
-+            return "MIDDLE";
-+        }
-+
-+        return clickType == null ? "UNKNOWN" : clickType.name();
++        return "UNKNOWN";
 +    }
 +
 +    private boolean isPickupClick() {
@@ -4374,6 +4395,105 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
  
          final Component component = context.getComponent();
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe656625c26fc2f0931141aa5e24bf5df236892b
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
+@@ -0,0 +1,93 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow.WindowClickType;
++import org.bukkit.event.inventory.ClickType;
++import org.junit.jupiter.api.Test;
++
++class PacketGuiClickTest {
++
++    private static final int TOP_SIZE = 27;
++    private static final int OUTSIDE = -999;
++
++    @Test
++    void classifiesSupportedTopClicks() {
++        assertEquals(
++                PacketGuiRepairScope.TOP_SLOT_AND_CURSOR,
++                PacketGuiClick.of(1, 0, 0, WindowClickType.PICKUP).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.TOP_SLOT_AND_CURSOR,
++                PacketGuiClick.of(1, 0, 0, WindowClickType.CLONE).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_PLAYER_SLOT,
++                PacketGuiClick.of(1, 0, 1, WindowClickType.QUICK_MOVE).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_PLAYER_SLOT,
++                PacketGuiClick.of(1, 0, 3, WindowClickType.SWAP).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_OFFHAND,
++                PacketGuiClick.of(1, 0, 40, WindowClickType.SWAP).repairScope(TOP_SIZE));
++    }
++
++    @Test
++    void treatsOnlyPickupOnSlotMinus999AsOutsideClick() {
++        assertTrue(PacketGuiClick.of(1, OUTSIDE, 0, WindowClickType.PICKUP).isOutsideClick());
++        assertTrue(PacketGuiClick.of(1, OUTSIDE, 1, WindowClickType.PICKUP).isOutsideClick());
++        assertFalse(PacketGuiClick.of(1, OUTSIDE, 2, WindowClickType.PICKUP).isOutsideClick());
++        assertFalse(PacketGuiClick.of(1, 0, 0, WindowClickType.PICKUP).isOutsideClick());
++    }
++
++    @Test
++    void deniesEveryNonPickupClickOnSlotMinus999() {
++        for (final WindowClickType type : WindowClickType.values()) {
++            for (final int button : new int[] {0, 1, 2, 4, 5, 6, 8, 9, 10, 40}) {
++                final PacketGuiClick click = PacketGuiClick.of(1, OUTSIDE, button, type);
++                final boolean pickup = type == WindowClickType.PICKUP && (button == 0 || button == 1);
++                final String label = type + "/" + button;
++
++                assertEquals(pickup, click.isOutsideClick(), "isOutsideClick for " + label);
++
++                if (!pickup) {
++                    assertEquals(
++                            PacketGuiRepairScope.FULL_WINDOW,
++                            click.repairScope(TOP_SIZE),
++                            "repairScope for " + label);
++                }
++            }
++        }
++    }
++
++    @Test
++    void deniesDragThrowAndDoubleClickOnRealSlots() {
++        for (final WindowClickType type :
++                new WindowClickType[] {WindowClickType.QUICK_CRAFT, WindowClickType.THROW, WindowClickType.PICKUP_ALL
++                }) {
++            for (final int button : new int[] {0, 1, 2, 4, 8, 10}) {
++                assertEquals(
++                        PacketGuiRepairScope.FULL_WINDOW,
++                        PacketGuiClick.of(1, 0, button, type).repairScope(TOP_SIZE),
++                        "top slot " + type + "/" + button);
++                assertEquals(
++                        PacketGuiRepairScope.FULL_WINDOW,
++                        PacketGuiClick.of(1, TOP_SIZE + 4, button, type).repairScope(TOP_SIZE),
++                        "bottom slot " + type + "/" + button);
++            }
++        }
++    }
++
++    @Test
++    void neverLeaksNonBukkitClickIdentifiers() {
++        for (final WindowClickType type : WindowClickType.values()) {
++            for (int button = -1; button <= 41; button++) {
++                final String identifier = PacketGuiClick.of(1, 0, button, type).clickIdentifier();
++                assertDoesNotThrow(
++                        () -> ClickType.valueOf(identifier),
++                        "identifier '" + identifier + "' is not a Bukkit ClickType (" + type + "/" + button + ")");
++            }
++        }
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..6b7b81adbc1430fe023c82a742ab5005fa01b64e
