@@ -112,7 +112,7 @@ index 16e4791981a4fd159659190b2ac3e1a961e28e90..78c704d7457a6fe653346e5d10037292
  
      @Override
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
-index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954f050938e 100644
+index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..182a0b071c6c563c52e2a75bb7b382c384efdf16 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 @@ -5,6 +5,8 @@ import me.devnatan.inventoryframework.context.IFCloseContext;
@@ -124,15 +124,19 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
  import me.devnatan.inventoryframework.pipeline.StandardPipelinePhases;
  import org.bukkit.entity.Player;
  import org.bukkit.event.EventHandler;
-@@ -13,6 +15,7 @@ import org.bukkit.event.Listener;
+@@ -13,8 +15,11 @@ import org.bukkit.event.Listener;
  import org.bukkit.event.inventory.InventoryClickEvent;
  import org.bukkit.event.inventory.InventoryCloseEvent;
  import org.bukkit.event.inventory.InventoryDragEvent;
 +import org.bukkit.event.inventory.InventoryOpenEvent;
  import org.bukkit.event.inventory.InventoryType;
++import org.bukkit.event.player.PlayerChangedWorldEvent;
  import org.bukkit.event.player.PlayerDropItemEvent;
++import org.bukkit.event.player.PlayerRespawnEvent;
  import org.bukkit.event.player.PlayerPickupItemEvent;
-@@ -24,9 +27,15 @@ import org.bukkit.inventory.PlayerInventory;
+ import org.bukkit.event.player.PlayerQuitEvent;
+ import org.bukkit.event.server.PluginDisableEvent;
+@@ -24,9 +29,15 @@ import org.bukkit.inventory.PlayerInventory;
  final class IFInventoryListener implements Listener {
  
      private final ViewFrame viewFrame;
@@ -148,7 +152,7 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
      }
  
      @EventHandler
-@@ -39,6 +48,8 @@ final class IFInventoryListener implements Listener {
+@@ -39,6 +50,8 @@ final class IFInventoryListener implements Listener {
      @EventHandler
      public void onPlayerQuit(PlayerQuitEvent event) {
          final Player player = (Player) event.getPlayer();
@@ -157,7 +161,7 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
          final Viewer viewer = viewFrame.getViewer(player);
          if (viewer == null) return;
  
-@@ -49,6 +60,13 @@ final class IFInventoryListener implements Listener {
+@@ -49,6 +62,23 @@ final class IFInventoryListener implements Listener {
          root.getPipeline().execute(StandardPipelinePhases.CLOSE, closeContext);
      }
  
@@ -166,6 +170,16 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..199757af2e76e5ffecbc8a1d2c2ca954
 +        if (!(event.getPlayer() instanceof Player)) return;
 +
 +        guiBackend.handleExternalInventoryOpen((Player) event.getPlayer());
++    }
++
++    @EventHandler(priority = EventPriority.MONITOR)
++    public void onPlayerChangedWorld(final PlayerChangedWorldEvent event) {
++        guiBackend.handleWorldChange(event.getPlayer());
++    }
++
++    @EventHandler(priority = EventPriority.MONITOR)
++    public void onPlayerRespawn(final PlayerRespawnEvent event) {
++        guiBackend.handleWorldChange(event.getPlayer());
 +    }
 +
      @EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
@@ -896,10 +910,10 @@ index 0000000000000000000000000000000000000000..d4e57da254cdf676539e0ee3ab3862b7
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..b7efdbc7bce0e7f68d83abd93aeace52279326bb
+index 0000000000000000000000000000000000000000..1ebc23498c0bf82552da3ef8c78d433385ceb688
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,44 @@
 +package me.devnatan.inventoryframework.internal;
 +
 +import me.devnatan.inventoryframework.ViewContainer;
@@ -927,6 +941,16 @@ index 0000000000000000000000000000000000000000..b7efdbc7bce0e7f68d83abd93aeace52
 +    }
 +
 +    default boolean handleExternalInventoryOpen(@NotNull Player player) {
++        return false;
++    }
++
++    /**
++     * Finalizes any GUI the viewer has open because they changed world or respawned. The client drops its
++     * screen in both cases without sending a close packet.
++     *
++     * @return {@code true} when a session was finalized by this backend.
++     */
++    default boolean handleWorldChange(@NotNull Player player) {
 +        return false;
 +    }
 +
@@ -1011,10 +1035,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc4508729d911025
+index 0000000000000000000000000000000000000000..47d33671e613f6b2f584ef4a0a61af6820a47ba4
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1285 @@
+@@ -0,0 +1,1430 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1027,6 +1051,7 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +import java.lang.reflect.Method;
 +import java.util.ArrayList;
 +import java.util.List;
++import java.util.Set;
 +import java.util.UUID;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.concurrent.ConcurrentMap;
@@ -1063,15 +1088,24 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +    private static final String CLOSE_ORIGIN_QUIT = "packet-gui-player-quit";
 +    private static final String CLOSE_ORIGIN_EXTERNAL_OPEN = "packet-gui-external-inventory-open";
 +    private static final String CLOSE_ORIGIN_SHUTDOWN = "packet-gui-shutdown";
++    private static final String CLOSE_ORIGIN_WORLD_CHANGE = "packet-gui-world-change";
++
++    private static final Method PLAYER_GET_SCHEDULER = optionalMethod(Player.class, "getScheduler");
++    private static final Method BUKKIT_IS_OWNED_BY_CURRENT_REGION =
++            optionalMethod(Bukkit.class, "isOwnedByCurrentRegion", Entity.class);
++    private static final ConcurrentMap<Class<?>, Method> SCHEDULER_RUN = new ConcurrentHashMap<>();
++    private static final ConcurrentMap<Class<?>, Method> SCHEDULER_RUN_DELAYED = new ConcurrentHashMap<>();
 +
 +    private final Plugin owner;
 +    private final BukkitGuiBackend fallbackBackend;
 +    private final ConcurrentMap<UUID, PacketGuiSession> sessions = new ConcurrentHashMap<>();
 +    private final ConcurrentMap<UUID, PacketViewerInventory> viewerInventories = new ConcurrentHashMap<>();
 +    private final AtomicInteger nextWindowId = new AtomicInteger(1);
-+    private PacketGuiNativeOutboundSender nativeOutbound;
++    private final Set<String> reportedUnsupportedTypes = ConcurrentHashMap.newKeySet();
++    private volatile PacketGuiNativeOutboundSender nativeOutbound;
 +    private PacketListenerCommon listener;
 +    private volatile boolean available = true;
++    private volatile boolean regionOwnershipFailureLogged;
 +
 +    public PacketGuiBackend(@NotNull Plugin owner, @NotNull BukkitGuiBackend fallbackBackend) {
 +        this.owner = owner;
@@ -1084,14 +1118,18 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +            @NotNull ViewType type,
 +            int size,
 +            Object title) {
-+        if (!available || !(context instanceof IFRenderContext)) {
++        if (!available || nativeOutbound == null || !(context instanceof IFRenderContext)) {
 +            return fallbackBackend.createContainer(context, type, size, title);
 +        }
 +
 +        if (!ViewType.CHEST.equals(type) || (size != 0 && size % type.getColumns() != 0)) {
-+            owner.getLogger()
-+                    .fine("Packet GUI backend currently supports chest-style containers only. "
-+                            + "Using Bukkit backend for " + type.getIdentifier() + ".");
++            if (reportedUnsupportedTypes.add(type.getIdentifier())) {
++                owner.getLogger()
++                        .info("[IF] GUI backend: " + type.getIdentifier()
++                                + " containers are not supported by the packet backend and keep using real "
++                                + "Bukkit inventory items. Only chest-style containers are rendered with fake "
++                                + "packet items.");
++            }
 +            return fallbackBackend.createContainer(context, type, size, title);
 +        }
 +
@@ -1154,24 +1192,26 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +
 +    @Override
 +    public void unregister() {
++        // Stop handing out packet containers before anything else, otherwise an in-flight async open job can
++        // still install a session into the maps this method is about to clear.
++        available = false;
++
++        if (listener != null) {
++            try {
++                PacketEvents.getAPI().getEventManager().unregisterListener(listener);
++            } catch (final RuntimeException exception) {
++                owner.getLogger().log(Level.WARNING, "Failed to unregister packet GUI listener", exception);
++            } finally {
++                listener = null;
++            }
++        }
++
 +        for (final PacketGuiSession session : List.copyOf(sessions.values())) {
 +            closeSession(session, false, CLOSE_ORIGIN_SHUTDOWN, false, false);
 +        }
 +        sessions.clear();
 +        viewerInventories.clear();
 +        nativeOutbound = null;
-+
-+        if (listener == null) {
-+            return;
-+        }
-+
-+        try {
-+            PacketEvents.getAPI().getEventManager().unregisterListener(listener);
-+        } catch (final RuntimeException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to unregister packet GUI listener", exception);
-+        } finally {
-+            listener = null;
-+        }
 +    }
 +
 +    @Override
@@ -1179,9 +1219,11 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +        final PacketGuiSession session = sessions.get(player.getUniqueId());
 +        if (session == null) return false;
 +
-+        closeSession(session, false, CLOSE_ORIGIN_QUIT, true, true);
++        // The return value decides whether IFInventoryListener skips its own quit cleanup, so it has to reflect
++        // whether this backend really finalized the session.
++        final boolean closed = closeSession(session, false, CLOSE_ORIGIN_QUIT, true, true);
 +        viewerInventories.remove(player.getUniqueId());
-+        return true;
++        return closed;
 +    }
 +
 +    @Override
@@ -1189,8 +1231,15 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +        final PacketGuiSession session = sessions.get(player.getUniqueId());
 +        if (session == null) return false;
 +
-+        closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true);
-+        return true;
++        return closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true);
++    }
++
++    @Override
++    public boolean handleWorldChange(@NotNull Player player) {
++        final PacketGuiSession session = sessions.get(player.getUniqueId());
++        if (session == null) return false;
++
++        return closeSession(session, true, CLOSE_ORIGIN_WORLD_CHANGE, true, true);
 +    }
 +
 +    @Override
@@ -1370,14 +1419,17 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +        final PacketGuiSession session = sessions.get(user.getUUID());
 +        if (isTracked(session)) {
 +            session.closeRequested(true);
-+            runOnPlayer(
-+                    session.player(),
-+                    () -> closeSession(
-+                            session,
-+                            false,
-+                            CLOSE_ORIGIN_SERVER,
-+                            true,
-+                            false));
++            runOnPlayer(session.player(), () -> {
++                final Player player = session.player();
++                if (!closeSession(session, false, CLOSE_ORIGIN_SERVER, true, false)) {
++                    return;
++                }
++
++                // The client keeps its locally predicted stacks for the window's bottom rows. Resync the real
++                // inventory one tick later, so the container-0 content packet arrives after the client is back
++                // in its own inventory menu and does not get discarded.
++                runOnPlayerNextTick(player, player::updateInventory);
++            });
 +            return;
 +        }
 +
@@ -1469,18 +1521,25 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +        }
 +
 +        runOnPlayer(session.player(), () -> {
-+            if (!isTracked(session) || session.closeRequested()) {
++            final PacketGuiNativeOutboundSender sender = nativeOutbound;
++            if (sender == null || !isTracked(session) || session.closeRequested()) {
 +                return;
 +            }
 +
-+            final int stateId = session.nextStateId();
-+            for (int index = 0; index < guiSlots.size(); index++) {
-+                nativeOutbound.sendContainerSetSlot(
-+                        session.player(),
-+                        session.windowId(),
-+                        stateId,
-+                        guiSlots.get(index),
-+                        cloneItem(playerInventoryItem(session.player(), playerSlots.get(index))));
++            try {
++                final int stateId = session.nextStateId();
++                for (int index = 0; index < guiSlots.size(); index++) {
++                    sender.sendContainerSetSlot(
++                            session.player(),
++                            session.windowId(),
++                            stateId,
++                            guiSlots.get(index),
++                            cloneItem(playerInventoryItem(session.player(), playerSlots.get(index))));
++                }
++            } catch (final RuntimeException exception) {
++                owner.getLogger()
++                        .log(Level.WARNING, "Failed to mirror the player inventory into a packet GUI", exception);
++                closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
 +            }
 +        });
 +    }
@@ -1498,16 +1557,23 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +        }
 +
 +        runOnPlayer(session.player(), () -> {
-+            if (!isTracked(session) || session.closeRequested()) {
++            final PacketGuiNativeOutboundSender sender = nativeOutbound;
++            if (sender == null || !isTracked(session) || session.closeRequested()) {
 +                return;
 +            }
 +
-+            nativeOutbound.sendContainerSetSlot(
-+                    session.player(),
-+                    session.windowId(),
-+                    session.nextStateId(),
-+                    guiSlot,
-+                    cloneItem(playerInventoryItem(session.player(), playerWindowSlot)));
++            try {
++                sender.sendContainerSetSlot(
++                        session.player(),
++                        session.windowId(),
++                        session.nextStateId(),
++                        guiSlot,
++                        cloneItem(playerInventoryItem(session.player(), playerWindowSlot)));
++            } catch (final RuntimeException exception) {
++                owner.getLogger()
++                        .log(Level.WARNING, "Failed to mirror a player inventory slot into a packet GUI", exception);
++                closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
++            }
 +        });
 +    }
 +
@@ -1933,7 +1999,12 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +    }
 +
 +    private void sendCursor(PacketGuiSession session) {
-+        nativeOutbound.sendCursor(session.player(), cloneItem(session.player().getItemOnCursor()));
++        final PacketGuiNativeOutboundSender sender = nativeOutbound;
++        if (sender == null) {
++            return;
++        }
++
++        sender.sendCursor(session.player(), cloneItem(session.player().getItemOnCursor()));
 +    }
 +
 +    private void addCursor(PacketGuiConversionPlan conversionPlan, ItemStack cursorSnapshot) {
@@ -2011,7 +2082,8 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +    }
 +
 +    private void sendRenderPlanNow(PacketGuiSession session, PacketGuiSendPlan plan) {
-+        if (!canSendPlan(session, plan)) {
++        final PacketGuiNativeOutboundSender sender = nativeOutbound;
++        if (sender == null || !canSendPlan(session, plan)) {
 +            return;
 +        }
 +
@@ -2021,7 +2093,7 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +                    return;
 +                }
 +
-+                packet.send(nativeOutbound, session.player());
++                packet.send(sender, session.player());
 +            }
 +        } catch (final RuntimeException exception) {
 +            owner.getLogger().log(Level.WARNING, "Failed to send native packet GUI render", exception);
@@ -2111,6 +2183,14 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +            return;
 +        }
 +
++        if (PLAYER_GET_SCHEDULER != null) {
++            // The entity scheduler exists but refused the task, which only happens once the player's scheduler
++            // is retired. Falling back to the global scheduler would run GUI work on the wrong thread, so the
++            // session is discarded instead.
++            abandonSession(player);
++            return;
++        }
++
 +        Bukkit.getScheduler().runTask(owner, task);
 +    }
 +
@@ -2119,54 +2199,122 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +            return;
 +        }
 +
++        if (PLAYER_GET_SCHEDULER != null) {
++            abandonSession(player);
++            return;
++        }
++
 +        Bukkit.getScheduler().runTask(owner, task);
 +    }
 +
 +    private boolean tryRunEntityScheduler(Player player, Runnable task) {
-+        final Object scheduler;
-+        try {
-+            final Method getScheduler = player.getClass().getMethod("getScheduler");
-+            scheduler = getScheduler.invoke(player);
-+        } catch (final NoSuchMethodException ignored) {
++        final Object scheduler = entityScheduler(player);
++        if (scheduler == null) {
 +            return false;
-+        } catch (final ReflectiveOperationException exception) {
-+            throw new IllegalStateException("Failed to access packet GUI player scheduler", exception);
 +        }
 +
-+        try {
-+            final Method run = scheduler.getClass().getMethod("run", Plugin.class, Consumer.class, Runnable.class);
-+            final Consumer<Object> scheduledTaskConsumer = ignored -> task.run();
-+            run.invoke(scheduler, owner, scheduledTaskConsumer, null);
-+            return true;
-+        } catch (final NoSuchMethodException ignored) {
-+            throw new IllegalStateException("Player scheduler does not expose a run method");
-+        } catch (final ReflectiveOperationException exception) {
-+            throw new IllegalStateException("Failed to schedule packet GUI task on the player scheduler", exception);
++        final Method run = schedulerMethod(
++                SCHEDULER_RUN, scheduler.getClass(), "run", Plugin.class, Consumer.class, Runnable.class);
++        if (run == null) {
++            return false;
 +        }
++
++        return invokeScheduler(run, scheduler, owner, consumer(task), retired(player));
 +    }
 +
 +    private boolean tryRunEntitySchedulerDelayed(Player player, Runnable task) {
-+        final Object scheduler;
-+        try {
-+            final Method getScheduler = player.getClass().getMethod("getScheduler");
-+            scheduler = getScheduler.invoke(player);
-+        } catch (final NoSuchMethodException ignored) {
++        final Object scheduler = entityScheduler(player);
++        if (scheduler == null) {
 +            return false;
-+        } catch (final ReflectiveOperationException exception) {
-+            throw new IllegalStateException("Failed to access packet GUI player scheduler", exception);
++        }
++
++        final Method runDelayed = schedulerMethod(
++                SCHEDULER_RUN_DELAYED,
++                scheduler.getClass(),
++                "runDelayed",
++                Plugin.class,
++                Consumer.class,
++                Runnable.class,
++                long.class);
++        if (runDelayed == null) {
++            return tryRunEntityScheduler(player, task);
++        }
++
++        return invokeScheduler(runDelayed, scheduler, owner, consumer(task), retired(player), 1L);
++    }
++
++    private Object entityScheduler(Player player) {
++        if (PLAYER_GET_SCHEDULER == null) {
++            return null;
 +        }
 +
 +        try {
-+            final Method runDelayed =
-+                    scheduler.getClass().getMethod("runDelayed", Plugin.class, Consumer.class, Runnable.class, long.class);
-+            final Consumer<Object> scheduledTaskConsumer = ignored -> task.run();
-+            runDelayed.invoke(scheduler, owner, scheduledTaskConsumer, null, 1L);
-+            return true;
-+        } catch (final NoSuchMethodException ignored) {
-+            return tryRunEntityScheduler(player, task);
++            return PLAYER_GET_SCHEDULER.invoke(player);
 +        } catch (final ReflectiveOperationException exception) {
-+            throw new IllegalStateException("Failed to schedule packet GUI task on the player scheduler", exception);
++            owner.getLogger().log(Level.WARNING, "Failed to access the packet GUI player scheduler", exception);
++            return null;
 +        }
++    }
++
++    private Method schedulerMethod(
++            ConcurrentMap<Class<?>, Method> cache,
++            Class<?> schedulerClass,
++            String name,
++            Class<?>... parameterTypes) {
++        final Method cached = cache.get(schedulerClass);
++        if (cached != null) {
++            return cached;
++        }
++
++        final Method resolved = optionalMethod(schedulerClass, name, parameterTypes);
++        if (resolved != null) {
++            cache.putIfAbsent(schedulerClass, resolved);
++        }
++        return resolved;
++    }
++
++    /**
++     * Invokes a scheduler method and reports whether the task was actually accepted. Folia returns
++     * {@code null} from {@code run}/{@code runDelayed} when the entity scheduler is retired; ignoring that
++     * silently drops the task and latches the session's scheduled-render flag forever.
++     */
++    private boolean invokeScheduler(Method method, Object scheduler, Object... arguments) {
++        try {
++            return method.invoke(scheduler, arguments) != null;
++        } catch (final ReflectiveOperationException exception) {
++            owner.getLogger().log(Level.WARNING, "Failed to schedule a packet GUI task", exception);
++            return false;
++        }
++    }
++
++    private static Consumer<Object> consumer(Runnable task) {
++        return ignored -> task.run();
++    }
++
++    private Runnable retired(Player player) {
++        return () -> abandonSession(player);
++    }
++
++    /**
++     * Drops a session whose viewer can no longer be scheduled on. No close packet and no close pipeline: the
++     * client is already gone or has been moved, and running developer code here would be off-thread.
++     */
++    private void abandonSession(Player player) {
++        final PacketGuiSession session = sessions.remove(player.getUniqueId());
++        if (session == null) {
++            return;
++        }
++
++        synchronized (session) {
++            session.invalidatePendingSends();
++            session.closeRequested(true);
++            session.closed(true);
++        }
++        session.clearScheduledRender();
++        session.viewerInventory().resetOpenWindow();
++        owner.getLogger()
++                .fine("Discarded packet GUI session for " + player.getName()
++                        + ": the viewer's scheduler is no longer accepting tasks.");
 +    }
 +
 +    private boolean isOnPlayerThread(Player player) {
@@ -2179,13 +2327,34 @@ index 0000000000000000000000000000000000000000..944642b518fe77718837d046dc450872
 +    }
 +
 +    private Boolean isOwnedByCurrentRegion(Player player) {
++        if (BUKKIT_IS_OWNED_BY_CURRENT_REGION == null) {
++            return null;
++        }
++
 +        try {
-+            final Method method = Bukkit.class.getMethod("isOwnedByCurrentRegion", Entity.class);
-+            return Boolean.TRUE.equals(method.invoke(null, player));
++            return Boolean.TRUE.equals(BUKKIT_IS_OWNED_BY_CURRENT_REGION.invoke(null, player));
++        } catch (final ReflectiveOperationException exception) {
++            if (!regionOwnershipFailureLogged) {
++                regionOwnershipFailureLogged = true;
++                owner.getLogger()
++                        .log(
++                                Level.WARNING,
++                                "Failed to query region ownership; falling back to the primary thread check.",
++                                exception);
++            }
++            // null makes the caller fall back to Bukkit#isPrimaryThread instead of permanently claiming
++            // "wrong thread", which used to make every render reschedule itself forever.
++            return null;
++        }
++    }
++
++    private static Method optionalMethod(Class<?> owner, String name, Class<?>... parameterTypes) {
++        try {
++            final Method method = owner.getMethod(name, parameterTypes);
++            method.setAccessible(true);
++            return method;
 +        } catch (final NoSuchMethodException ignored) {
 +            return null;
-+        } catch (final ReflectiveOperationException ignored) {
-+            return Boolean.FALSE;
 +        }
 +    }
 +
@@ -3297,10 +3466,10 @@ index 0000000000000000000000000000000000000000..bfe5e483593193cc8e62027a4e2684e0
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..180b53e896495308f79c1ed717bd2cbf306a7b27
+index 0000000000000000000000000000000000000000..d1936ea5e42a894eca52d28ebc7a0dae57b1c084
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,430 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
@@ -3465,6 +3634,14 @@ index 0000000000000000000000000000000000000000..180b53e896495308f79c1ed717bd2cbf
 +        Arrays.fill(scheduledPlayerSlotRepairs, false);
 +        scheduledPlayerSlotRepairCount = 0;
 +        return request;
++    }
++
++    /**
++     * Releases the scheduled-render latch without producing a request. Used when the task that was supposed to
++     * consume the request can never run, so a later {@link #scheduleRender} is not swallowed.
++     */
++    synchronized void clearScheduledRender() {
++        renderScheduled = false;
 +    }
 +
 +    synchronized com.github.retrooper.packetevents.protocol.item.ItemStack packetItem(PacketGuiRender render, int slot) {
