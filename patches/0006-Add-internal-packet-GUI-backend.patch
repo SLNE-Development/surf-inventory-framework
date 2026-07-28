@@ -745,7 +745,7 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..992fbb75c57e056a275b5d48f0817a4e
      }
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
-index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..95601e57489215ddf2641f413a690b91b8bcfa07 100644
+index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..92eb5a88f4fbe962ed36ca2f80bf8daa26b8a58b 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 @@ -5,11 +5,8 @@ import me.devnatan.inventoryframework.ViewContainer;
@@ -922,8 +922,8 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..95601e57489215ddf2641f413a690b91
      }
 +
 +    private SlotClickOrigin normalizeOrigin(Object origin) {
-+        if (origin instanceof SlotClickOrigin) return (SlotClickOrigin) origin;
-+        if (origin instanceof InventoryClickEvent) return new BukkitSlotClickOrigin((InventoryClickEvent) origin);
++        if (origin instanceof SlotClickOrigin slotClickOrigin) return slotClickOrigin;
++        if (origin instanceof InventoryClickEvent event) return new BukkitSlotClickOrigin(event);
 +
 +        throw new IllegalArgumentException("Unsupported click origin: " + origin.getClass().getName());
 +    }
