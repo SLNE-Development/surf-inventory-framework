@@ -1228,10 +1228,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..0e5dc38e5d2c1f93c1d194c48187042dff656f49
+index 0000000000000000000000000000000000000000..25a27b4bac62fb099370198b1ea2238c00d73b37
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1224 @@
+@@ -0,0 +1,1261 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1252,6 +1252,7 @@ index 0000000000000000000000000000000000000000..0e5dc38e5d2c1f93c1d194c48187042d
 +import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.logging.Level;
 +import me.devnatan.inventoryframework.BukkitViewer;
++import me.devnatan.inventoryframework.PlatformView;
 +import me.devnatan.inventoryframework.RootView;
 +import me.devnatan.inventoryframework.ViewContainer;
 +import me.devnatan.inventoryframework.ViewType;
@@ -1483,25 +1484,31 @@ index 0000000000000000000000000000000000000000..0e5dc38e5d2c1f93c1d194c48187042d
 +            return;
 +        }
 +
-+        final PacketViewerWindowTracker windowTracker = windowTrackerFor(player.getUniqueId());
-+        final int externalWindowId = windowTracker.openWindowId();
-+
-+        // A real server-side menu must not stay open behind the fake window: the client would render the GUI
-+        // while the server keeps ticking the real container, and closing the GUI would never release it.
-+        closeRealInventory(player);
-+
-+        final PacketGuiSession session = new PacketGuiSession(
-+                viewer,
-+                user,
-+                PacketGuiWindowIds.allocate(nextWindowId, externalWindowId),
-+                container,
-+                windowTracker);
-+
-+        // Tearing the previous session down runs its CLOSE pipeline, i.e. arbitrary developer and framework
-+        // code. That code routinely ends up calling Player#closeInventory, whose outbound close packet must
-+        // not be mistaken for the viewer closing the window we are in the middle of opening.
-+        openingViewers.add(player.getUniqueId());
++        // Everything from here on can emit an outbound close packet - closeRealInventory directly, the
++        // previous session's CLOSE pipeline indirectly, since arbitrary developer and framework code
++        // routinely ends up calling Player#closeInventory. None of it may be mistaken for the viewer closing
++        // the window being opened.
++        //
++        // The close pipeline may also re-enter open() for the same viewer. Only the outermost invocation may
++        // lift the marker: an inner one clearing it would leave the rest of the outer sequence unguarded,
++        // which is precisely the window this guard exists to cover.
++        final boolean outermostOpen = openingViewers.add(player.getUniqueId());
 +        try {
++            final PacketViewerWindowTracker windowTracker = windowTrackerFor(player.getUniqueId());
++            final int externalWindowId = windowTracker.openWindowId();
++
++            // A real server-side menu must not stay open behind the fake window: the client would render the
++            // GUI while the server keeps ticking the real container, and closing the GUI would never release
++            // it.
++            closeRealInventory(player);
++
++            final PacketGuiSession session = new PacketGuiSession(
++                    viewer,
++                    user,
++                    PacketGuiWindowIds.allocate(nextWindowId, externalWindowId),
++                    container,
++                    windowTracker);
++
 +            // Publish before the teardown: the close pipeline may re-enter open(), and the conditional remove
 +            // inside closeSession keeps it from evicting this session.
 +            final PacketGuiSession previous = sessions.put(player.getUniqueId(), session);
@@ -1523,7 +1530,9 @@ index 0000000000000000000000000000000000000000..0e5dc38e5d2c1f93c1d194c48187042d
 +
 +            renderSession(session, true, true);
 +        } finally {
-+            openingViewers.remove(player.getUniqueId());
++            if (outermostOpen) {
++                openingViewers.remove(player.getUniqueId());
++            }
 +        }
 +    }
 +
@@ -2354,9 +2363,37 @@ index 0000000000000000000000000000000000000000..0e5dc38e5d2c1f93c1d194c48187042d
 +        }
 +        session.clearScheduledRender();
 +        session.windowTracker().resetOpenWindow();
++
++        // Not FINE: no production server runs at that level, and a viewer losing its GUI without any close
++        // handler running is exactly the kind of thing that otherwise gets reported as "sometimes the GUI
++        // just disappears" with nothing in the log to go on.
 +        owner.getLogger()
-+                .fine("Discarded packet GUI session for " + player.getName()
-+                        + ": the viewer's scheduler is no longer accepting tasks.");
++                .warning("Discarded the packet GUI session of " + player.getName()
++                        + " without running its close handlers: the viewer's scheduler is no longer accepting"
++                        + " tasks.");
++
++        detachAbandonedViewer(session);
++    }
++
++    /**
++     * Releases the framework's own hold on an abandoned viewer.
++     *
++     * <p>The CLOSE pipeline is deliberately not run: it executes developer code, and the reason this method
++     * exists at all is that no thread will accept work for the viewer any more. Without this, though, the
++     * view would keep listing a viewer that has no window and never gets one back, which leaks the context
++     * for as long as the view lives.
++     */
++    @SuppressWarnings({"unchecked", "rawtypes"})
++    private void detachAbandonedViewer(PacketGuiSession session) {
++        try {
++            final IFRenderContext context = session.context();
++            final RootView root = context.getRoot();
++            if (root instanceof PlatformView) {
++                ((PlatformView) root).removeAndTryInvalidateContext(session.viewer(), context);
++            }
++        } catch (final RuntimeException exception) {
++            owner.getLogger().log(Level.WARNING, "Failed to detach an abandoned packet GUI viewer", exception);
++        }
 +    }
 +
 +    private static InventoryType.SlotType slotTypeOf(PacketGuiClick click, int topSize) {
