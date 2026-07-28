@@ -1228,10 +1228,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..560c745f8dbf173a43665de61cf47336e4e8ef87
+index 0000000000000000000000000000000000000000..02e6833d21f84f298584bbcae5b2b44261c4f98f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1389 @@
+@@ -0,0 +1,1216 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1970,118 +1970,72 @@ index 0000000000000000000000000000000000000000..560c745f8dbf173a43665de61cf47336
 +        final boolean sendFullWindow = hardResync || reopen || previous == null;
 +
 +        try {
-+            final PlayerInventorySnapshot playerInventorySnapshot = sendFullWindow
-+                    ? snapshotPlayerInventory(session.player())
-+                    : null;
-+            final PacketGuiConversionPlan conversionPlan = new PacketGuiConversionPlan(
-+                    session.user(),
-+                    session.windowId(),
-+                    session.nextSendGeneration());
++            final PlayerInventorySnapshot playerInventorySnapshot =
++                    sendFullWindow ? snapshotPlayerInventory(session.player()) : null;
++            final PacketGuiSendPlan plan = new PacketGuiSendPlan(
++                    session.user().getChannel(), session.windowId(), session.nextSendGeneration());
 +
 +            if (reopen) {
-+                addOpenWindow(conversionPlan, session, render);
++                addOpenWindow(plan, session, render);
 +            }
 +
 +            if (sendFullWindow) {
-+                addWindowItems(conversionPlan, session, render, playerInventorySnapshot);
-+                addCursor(conversionPlan, playerInventorySnapshot.cursor());
++                addWindowItems(plan, session, render, playerInventorySnapshot);
++                addCursor(plan, playerInventorySnapshot.cursor());
 +            } else {
-+                addChangedTopSlots(conversionPlan, session, previous, render, forcedTopSlotRepairs);
-+                addPlayerSlotRepairs(conversionPlan, session, render, playerSlotRepairs);
-+                addCursor(conversionPlan, cloneItem(session.player().getItemOnCursor()));
++                addChangedTopSlots(plan, session, previous, render, forcedTopSlotRepairs);
++                addPlayerSlotRepairs(plan, session, render, playerSlotRepairs);
++                addCursor(plan, cloneItem(session.player().getItemOnCursor()));
 +            }
 +
 +            session.appliedRender(render);
-+            convertAndSendRenderPlan(session, conversionPlan);
++            sendRenderPlan(session, plan);
 +        } catch (final RuntimeException exception) {
 +            owner.getLogger().log(Level.WARNING, "Failed to prepare packet GUI render", exception);
 +            closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
 +        }
 +    }
 +
-+    private void addOpenWindow(
-+            PacketGuiConversionPlan conversionPlan, PacketGuiSession session, PacketGuiRender render) {
++    private void addOpenWindow(PacketGuiSendPlan plan, PacketGuiSession session, PacketGuiRender render) {
 +        final ServerVersion version = PacketEvents.getAPI().getServerManager().getVersion();
-+        final boolean modernWindowType = version.isNewerThanOrEquals(ServerVersion.V_1_14);
-+        final int windowId = session.windowId();
-+        final int rows = render.rows();
-+        final int size = render.size();
-+        final net.kyori.adventure.text.Component title = render.title();
-+        conversionPlan.addOperation((targetSession, packets) -> {
-+            final WrapperPlayServerOpenWindow packet;
-+            if (modernWindowType) {
-+                packet = new WrapperPlayServerOpenWindow(windowId, rows - 1, title);
-+            } else {
-+                packet = new WrapperPlayServerOpenWindow(windowId, "minecraft:chest", title, size, 0);
-+            }
-+            packets.add((sender, player) -> targetSession.user().sendPacket(packet));
-+            return true;
-+        });
++        final WrapperPlayServerOpenWindow packet = version.isNewerThanOrEquals(ServerVersion.V_1_14)
++                ? new WrapperPlayServerOpenWindow(session.windowId(), render.rows() - 1, render.title())
++                : new WrapperPlayServerOpenWindow(
++                        session.windowId(), "minecraft:chest", render.title(), render.size(), 0);
++
++        plan.add((sender, player) -> session.user().sendPacket(packet));
 +    }
 +
 +    private void addWindowItems(
-+            PacketGuiConversionPlan conversionPlan,
++            PacketGuiSendPlan plan,
 +            PacketGuiSession session,
 +            PacketGuiRender render,
 +            PlayerInventorySnapshot playerInventorySnapshot) {
 +        final int stateId = session.nextStateId();
-+        final ItemStack[] topItems = new ItemStack[render.size()];
++        final List<ItemStack> items = new ArrayList<>(render.size() + 36);
 +        for (int slot = 0; slot < render.size(); slot++) {
-+            topItems[slot] = render.bukkitItem(slot);
-+        }
-+        final ItemStack cursor = playerInventorySnapshot.cursor();
-+
-+        conversionPlan.addOperation((targetSession, packets) -> {
-+            final List<ItemStack> items = new ArrayList<>(topItems.length + 36);
-+            for (final ItemStack topItem : topItems) {
-+                if (!canConvertPlan(targetSession, conversionPlan)) {
-+                    return false;
-+                }
-+                items.add(cloneItem(topItem));
-+            }
-+
-+            for (int slot = PacketInventoryConstants.ITEMS_START;
-+                    slot < PacketInventoryConstants.ITEMS_START + 27;
-+                    slot++) {
-+                if (!addPlayerInventoryItem(targetSession, conversionPlan, playerInventorySnapshot, items, slot)) {
-+                    return false;
-+                }
-+            }
-+
-+            for (int slot = PacketInventoryConstants.HOTBAR_START;
-+                    slot < PacketInventoryConstants.HOTBAR_START + 9;
-+                    slot++) {
-+                if (!addPlayerInventoryItem(targetSession, conversionPlan, playerInventorySnapshot, items, slot)) {
-+                    return false;
-+                }
-+            }
-+
-+            packets.add((sender, player) -> sender.sendContainerSetContent(
-+                    player,
-+                    conversionPlan.windowId(),
-+                    stateId,
-+                    items,
-+                    cloneItem(cursor)));
-+            return true;
-+        });
-+    }
-+
-+    private boolean addPlayerInventoryItem(
-+            PacketGuiSession session,
-+            PacketGuiConversionPlan conversionPlan,
-+            PlayerInventorySnapshot playerInventorySnapshot,
-+            List<ItemStack> target,
-+            int playerWindowSlot) {
-+        if (!canConvertPlan(session, conversionPlan)) {
-+            return false;
++            items.add(render.bukkitItem(slot));
 +        }
 +
-+        target.add(cloneItem(playerInventorySnapshot.item(playerWindowSlot)));
-+        return true;
++        for (int slot = PacketInventoryConstants.ITEMS_START;
++                slot < PacketInventoryConstants.ITEMS_START + 27;
++                slot++) {
++            items.add(cloneItem(playerInventorySnapshot.item(slot)));
++        }
++
++        for (int slot = PacketInventoryConstants.HOTBAR_START;
++                slot < PacketInventoryConstants.HOTBAR_START + 9;
++                slot++) {
++            items.add(cloneItem(playerInventorySnapshot.item(slot)));
++        }
++
++        final ItemStack cursor = cloneItem(playerInventorySnapshot.cursor());
++        plan.add((sender, player) ->
++                sender.sendContainerSetContent(player, plan.windowId(), stateId, items, cursor));
 +    }
 +
 +    private void addChangedTopSlots(
-+            PacketGuiConversionPlan conversionPlan,
++            PacketGuiSendPlan plan,
 +            PacketGuiSession session,
 +            PacketGuiRender previous,
 +            PacketGuiRender render,
@@ -2099,69 +2053,34 @@ index 0000000000000000000000000000000000000000..560c745f8dbf173a43665de61cf47336
 +
 +            final int currentStateId = stateId;
 +            final int currentSlot = slot;
-+            final ItemStack itemSnapshot = render.bukkitItem(currentSlot);
-+            conversionPlan.addOperation((targetSession, packets) -> {
-+                if (!canConvertPlan(targetSession, conversionPlan)) {
-+                    return false;
-+                }
-+
-+                packets.add((sender, player) -> sender.sendContainerSetSlot(
-+                        player,
-+                        conversionPlan.windowId(),
-+                        currentStateId,
-+                        currentSlot,
-+                        cloneItem(itemSnapshot)));
-+                return true;
-+            });
++            final ItemStack item = render.bukkitItem(currentSlot);
++            plan.add((sender, player) ->
++                    sender.sendContainerSetSlot(player, plan.windowId(), currentStateId, currentSlot, item));
 +        }
 +    }
 +
 +    private void addPlayerSlotRepairs(
-+            PacketGuiConversionPlan conversionPlan,
-+            PacketGuiSession session,
-+            PacketGuiRender render,
-+            int[] playerSlotRepairs) {
-+        if (playerSlotRepairs.length == 0) {
-+            return;
-+        }
-+
++            PacketGuiSendPlan plan, PacketGuiSession session, PacketGuiRender render, int[] playerSlotRepairs) {
 +        int guiStateId = -1;
 +        for (final int playerSlot : playerSlotRepairs) {
-+            final ItemStack itemSnapshot = cloneItem(playerInventoryItem(session.player(), playerSlot));
++            final ItemStack item = cloneItem(playerInventoryItem(session.player(), playerSlot));
 +            final int openGuiSlot = mapPlayerWindowSlotToOpenGuiSlot(render.size(), playerSlot);
-+            final int stateId;
++
 +            if (openGuiSlot >= 0) {
 +                if (guiStateId < 0) {
 +                    guiStateId = session.nextStateId();
 +                }
-+                stateId = guiStateId;
-+            } else {
-+                stateId = session.nextStateId();
++
++                final int stateId = guiStateId;
++                plan.add((sender, player) ->
++                        sender.sendContainerSetSlot(player, plan.windowId(), stateId, openGuiSlot, item));
++                continue;
 +            }
++
++            final int stateId = session.nextStateId();
 +            final int playerInventorySlot = PacketInventoryConstants.containerSlotToPlayerInventorySlot(playerSlot);
-+
-+            conversionPlan.addOperation((targetSession, packets) -> {
-+                if (!canConvertPlan(targetSession, conversionPlan)) {
-+                    return false;
-+                }
-+
-+                if (openGuiSlot >= 0) {
-+                    packets.add((sender, player) -> sender.sendContainerSetSlot(
-+                            player,
-+                            targetSession.windowId(),
-+                            stateId,
-+                            openGuiSlot,
-+                            cloneItem(itemSnapshot)));
-+                } else {
-+                    packets.add((sender, player) -> sender.sendPlayerInventorySlot(
-+                            player,
-+                            playerInventorySlot,
-+                            playerSlot,
-+                            stateId,
-+                            cloneItem(itemSnapshot)));
-+                }
-+                return true;
-+            });
++            plan.add((sender, player) ->
++                    sender.sendPlayerInventorySlot(player, playerInventorySlot, playerSlot, stateId, item));
 +        }
 +    }
 +
@@ -2261,89 +2180,36 @@ index 0000000000000000000000000000000000000000..560c745f8dbf173a43665de61cf47336
 +        sender.sendCursor(session.player(), cloneItem(session.player().getItemOnCursor()));
 +    }
 +
-+    private void addCursor(PacketGuiConversionPlan conversionPlan, ItemStack cursorSnapshot) {
-+        conversionPlan.addOperation((targetSession, packets) -> {
-+            if (!canConvertPlan(targetSession, conversionPlan)) {
-+                return false;
-+            }
-+
-+            packets.add((sender, player) -> sender.sendCursor(player, cloneItem(cursorSnapshot)));
-+            return true;
-+        });
++    private void addCursor(PacketGuiSendPlan plan, ItemStack cursorSnapshot) {
++        final ItemStack cursor = cloneItem(cursorSnapshot);
++        plan.add((sender, player) -> sender.sendCursor(player, cursor));
 +    }
 +
-+    private void convertAndSendRenderPlan(PacketGuiSession session, PacketGuiConversionPlan conversionPlan) {
-+        if (conversionPlan.isEmpty()) {
-+            return;
-+        }
-+
-+        if (!isOnPlayerThread(session.player())) {
-+            runOnPlayer(session.player(), () -> sendConvertedRenderPlan(session, conversionPlan));
-+            return;
-+        }
-+
-+        sendConvertedRenderPlan(session, conversionPlan);
-+    }
-+
-+    private void sendConvertedRenderPlan(PacketGuiSession session, PacketGuiConversionPlan conversionPlan) {
-+        if (!canConvertPlan(session, conversionPlan)) {
-+            return;
-+        }
-+
-+        try {
-+            final List<PacketGuiOutboundPacket> packets = new ArrayList<>();
-+            for (final PacketGuiConversionOperation operation : conversionPlan.operations()) {
-+                if (!canConvertPlan(session, conversionPlan)) {
-+                    return;
-+                }
-+
-+                if (!operation.addPackets(session, packets)) {
-+                    return;
-+                }
-+            }
-+
-+            sendRenderPlan(session, new PacketGuiSendPlan(
-+                    conversionPlan.channel(),
-+                    conversionPlan.windowId(),
-+                    conversionPlan.generation(),
-+                    packets));
-+        } catch (final RuntimeException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to prepare native packet GUI item packets", exception);
-+            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
-+        }
-+    }
-+
-+    private boolean canConvertPlan(PacketGuiSession session, PacketGuiConversionPlan plan) {
-+        return isTracked(session)
-+                && nativeOutbound != null
-+                && !session.closeRequested()
-+                && session.windowId() == plan.windowId()
-+                && session.acceptsSendGeneration(plan.generation())
-+                && ChannelHelper.isOpen(plan.channel());
-+    }
-+
++    /**
++     * Sends a prepared render.
++     *
++     * <p>The guard is re-checked before every packet: a session can be closed, superseded by a newer render, or
++     * lose its channel part-way through, and stopping half way is better than addressing packets at a window
++     * the client no longer has.
++     */
 +    private void sendRenderPlan(PacketGuiSession session, PacketGuiSendPlan plan) {
 +        if (plan.isEmpty()) {
 +            return;
 +        }
 +
 +        if (!isOnPlayerThread(session.player())) {
-+            runOnPlayer(session.player(), () -> sendRenderPlanNow(session, plan));
++            runOnPlayer(session.player(), () -> sendRenderPlan(session, plan));
 +            return;
 +        }
 +
-+        sendRenderPlanNow(session, plan);
-+    }
-+
-+    private void sendRenderPlanNow(PacketGuiSession session, PacketGuiSendPlan plan) {
 +        final PacketGuiNativeOutboundSender sender = nativeOutbound;
-+        if (sender == null || !canSendPlan(session, plan)) {
++        if (sender == null) {
 +            return;
 +        }
 +
 +        try {
 +            for (final PacketGuiOutboundPacket packet : plan.packets()) {
-+                if (!canSendPlan(session, plan)) {
++                if (!canSend(session, plan)) {
 +                    return;
 +                }
 +
@@ -2355,7 +2221,7 @@ index 0000000000000000000000000000000000000000..560c745f8dbf173a43665de61cf47336
 +        }
 +    }
 +
-+    private boolean canSendPlan(PacketGuiSession session, PacketGuiSendPlan plan) {
++    private boolean canSend(PacketGuiSession session, PacketGuiSendPlan plan) {
 +        return isTracked(session)
 +                && nativeOutbound != null
 +                && !session.closeRequested()
@@ -2511,52 +2377,9 @@ index 0000000000000000000000000000000000000000..560c745f8dbf173a43665de61cf47336
 +        return InventoryAction.NOTHING;
 +    }
 +
-+    private interface PacketGuiConversionOperation {
-+
-+        boolean addPackets(PacketGuiSession session, List<PacketGuiOutboundPacket> packets);
-+    }
-+
 +    private interface PacketGuiOutboundPacket {
 +
 +        void send(PacketGuiNativeOutboundSender sender, Player player);
-+    }
-+
-+    private static final class PacketGuiConversionPlan {
-+
-+        private final Object channel;
-+        private final int windowId;
-+        private final long generation;
-+        private final List<PacketGuiConversionOperation> operations = new ArrayList<>();
-+
-+        private PacketGuiConversionPlan(User user, int windowId, long generation) {
-+            this.channel = user.getChannel();
-+            this.windowId = windowId;
-+            this.generation = generation;
-+        }
-+
-+        private void addOperation(PacketGuiConversionOperation operation) {
-+            operations.add(operation);
-+        }
-+
-+        private Object channel() {
-+            return channel;
-+        }
-+
-+        private int windowId() {
-+            return windowId;
-+        }
-+
-+        private long generation() {
-+            return generation;
-+        }
-+
-+        private List<PacketGuiConversionOperation> operations() {
-+            return operations;
-+        }
-+
-+        private boolean isEmpty() {
-+            return operations.isEmpty();
-+        }
 +    }
 +
 +    private static final class PlayerInventorySnapshot {
@@ -2582,22 +2405,26 @@ index 0000000000000000000000000000000000000000..560c745f8dbf173a43665de61cf47336
 +        }
 +    }
 +
++    /**
++     * One render worth of outbound packets, together with the session state they were built for. The window id,
++     * send generation and channel are captured up front so a plan that has been superseded can be recognised
++     * and dropped instead of being sent to a window that no longer exists.
++     */
 +    private static final class PacketGuiSendPlan {
 +
 +        private final Object channel;
 +        private final int windowId;
 +        private final long generation;
-+        private final List<PacketGuiOutboundPacket> packets;
++        private final List<PacketGuiOutboundPacket> packets = new ArrayList<>();
 +
-+        private PacketGuiSendPlan(
-+                Object channel,
-+                int windowId,
-+                long generation,
-+                List<PacketGuiOutboundPacket> packets) {
++        private PacketGuiSendPlan(Object channel, int windowId, long generation) {
 +            this.channel = channel;
 +            this.windowId = windowId;
 +            this.generation = generation;
-+            this.packets = List.copyOf(packets);
++        }
++
++        private void add(PacketGuiOutboundPacket packet) {
++            packets.add(packet);
 +        }
 +
 +        private Object channel() {
