@@ -238,14 +238,15 @@ index 2d97a162afacb6aa9652d9d83079088761bbd35b..4dc75f811d1a888cee0851a70377ac76
      // region Internals
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b40d1de04d9eda6ab89b9f8bc354f01b6736ba0
+index 0000000000000000000000000000000000000000..72d6166df08878e2e7a53864427ab4141728061a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,116 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
 +import org.bukkit.event.inventory.ClickType;
++import org.bukkit.event.inventory.InventoryAction;
 +import org.bukkit.event.inventory.InventoryClickEvent;
 +import org.bukkit.event.inventory.InventoryType;
 +import org.bukkit.inventory.Inventory;
@@ -290,6 +291,21 @@ index 0000000000000000000000000000000000000000..7b40d1de04d9eda6ab89b9f8bc354f01
 +    @Override
 +    public int getRawSlot() {
 +        return event.getRawSlot();
++    }
++
++    @Override
++    public @NotNull InventoryType.SlotType getSlotType() {
++        return event.getSlotType();
++    }
++
++    @Override
++    public @NotNull InventoryAction getAction() {
++        return event.getAction();
++    }
++
++    @Override
++    public int getHotbarButton() {
++        return event.getHotbarButton();
 +    }
 +
 +    @Override
@@ -356,10 +372,10 @@ index d73ddb29859761e6505b001fb4d303f953cb99e3..686664b4211880e0dc7651cebda4e66c
  import org.jetbrains.annotations.UnmodifiableView;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..f25b9629c69a3b3b97a025010ff908bf28cabda3
+index 0000000000000000000000000000000000000000..4a65fe5083774dc33e9601abfbc89bd644a012b5
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,138 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -397,10 +413,9 @@ index 0000000000000000000000000000000000000000..f25b9629c69a3b3b97a025010ff908bf
 +            @NotNull ClickType click,
 +            @NotNull SlotClickContext context,
 +            @NotNull SlotClickOrigin origin) {
-+        // A valid (real) view is required by the base constructor; slot 0 keeps the constructor's
-+        // slot conversion safe across versions. All item access is overridden below so the view is
-+        // never used to read or mutate inventory contents.
-+        super(view, InventoryType.SlotType.CONTAINER, 0, click, InventoryAction.NOTHING);
++        // A real (non-null) view is required by the base constructor. Every accessor that would reach it is
++        // overridden below, either with data from the packet click or with an explicit failure.
++        super(view, origin.getSlotType(), origin.getRawSlot(), click, origin.getAction());
 +        this.context = context;
 +        this.origin = origin;
 +    }
@@ -411,11 +426,13 @@ index 0000000000000000000000000000000000000000..f25b9629c69a3b3b97a025010ff908bf
 +    }
 +
 +    private static ClickType mapClickType(SlotClickOrigin origin) {
-+        if (origin.isKeyboardClick()) return ClickType.NUMBER_KEY;
-+        if (origin.isMiddleClick()) return ClickType.MIDDLE;
-+        if (origin.isShiftClick()) return origin.isRightClick() ? ClickType.SHIFT_RIGHT : ClickType.SHIFT_LEFT;
-+        if (origin.isRightClick()) return ClickType.RIGHT;
-+        return ClickType.LEFT;
++        // The click identifier is always the name of a real Bukkit ClickType constant, so it carries drop and
++        // double-click cases that the boolean accessors cannot express.
++        try {
++            return ClickType.valueOf(origin.getClickIdentifier());
++        } catch (final IllegalArgumentException ignored) {
++            return ClickType.UNKNOWN;
++        }
 +    }
 +
 +    @Override
@@ -434,6 +451,60 @@ index 0000000000000000000000000000000000000000..f25b9629c69a3b3b97a025010ff908bf
 +    }
 +
 +    @Override
++    public int getRawSlot() {
++        return origin.getRawSlot();
++    }
++
++    @Override
++    public int getSlot() {
++        return origin.getRawSlot();
++    }
++
++    @Override
++    public @NotNull InventoryType.SlotType getSlotType() {
++        return origin.getSlotType();
++    }
++
++    @Override
++    public @NotNull InventoryAction getAction() {
++        return origin.getAction();
++    }
++
++    @Override
++    public int getHotbarButton() {
++        return origin.getHotbarButton();
++    }
++
++    /**
++     * @throws UnsupportedOperationException always — a packet GUI has no real inventory, and returning the
++     * player's own view here would let GUI display items be written into it.
++     */
++    @Override
++    public @NotNull Inventory getInventory() {
++        throw new UnsupportedOperationException(
++                "A packet GUI has no real Bukkit Inventory. Use SlotClickContext#getClickedContainer instead.");
++    }
++
++    /**
++     * @throws UnsupportedOperationException always — see {@link #getInventory()}.
++     */
++    @Override
++    public @NotNull ItemStack getCursor() {
++        throw new UnsupportedOperationException(
++                "A packet GUI drives a virtual cursor. Reading the real server-side cursor is not supported.");
++    }
++
++    /**
++     * @throws UnsupportedOperationException always — writing the real cursor would turn a GUI display item
++     * into a real, droppable item.
++     */
++    @Override
++    public void setCursor(@Nullable ItemStack stack) {
++        throw new UnsupportedOperationException(
++                "A packet GUI drives a virtual cursor. Writing the real server-side cursor is not supported.");
++    }
++
++    @Override
 +    public boolean isCancelled() {
 +        return context.isCancelled();
 +    }
@@ -445,13 +516,15 @@ index 0000000000000000000000000000000000000000..f25b9629c69a3b3b97a025010ff908bf
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..f8414b68cc3a0ec537f013a65e583799965b84d1
+index 0000000000000000000000000000000000000000..4ee11f62518dbaf6e61c43d3ba5817249d330494
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,154 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.InventoryAction;
++import org.bukkit.event.inventory.InventoryType;
 +import org.bukkit.inventory.ItemStack;
 +import org.jetbrains.annotations.ApiStatus;
 +import org.jetbrains.annotations.NotNull;
@@ -462,7 +535,9 @@ index 0000000000000000000000000000000000000000..f8414b68cc3a0ec537f013a65e583799
 +
 +    private final Player player;
 +    private ItemStack currentItem;
-+    private final Object platformEvent;
++    private final InventoryType.SlotType slotType;
++    private final InventoryAction action;
++    private final int hotbarButton;
 +    private final int rawSlot;
 +    private final String clickIdentifier;
 +    private final boolean leftClick;
@@ -472,12 +547,18 @@ index 0000000000000000000000000000000000000000..f8414b68cc3a0ec537f013a65e583799
 +    private final boolean keyboardClick;
 +    private final boolean outsideClick;
 +    private final boolean onEntityContainer;
-+    private boolean cancelled = true;
++
++    // Matches the Bukkit backend, where the context starts uncancelled. Fail-closed behaviour does not depend
++    // on this flag: the click packet itself is cancelled in PacketGuiPacketListener before the framework runs,
++    // so nothing vanilla can mutate regardless of what a handler does here.
++    private boolean cancelled;
 +
 +    public PacketSlotClickOrigin(
 +            @NotNull Player player,
 +            @Nullable ItemStack currentItem,
-+            Object platformEvent,
++            @NotNull InventoryType.SlotType slotType,
++            @NotNull InventoryAction action,
++            int hotbarButton,
 +            int rawSlot,
 +            @NotNull String clickIdentifier,
 +            boolean leftClick,
@@ -489,7 +570,9 @@ index 0000000000000000000000000000000000000000..f8414b68cc3a0ec537f013a65e583799
 +            boolean onEntityContainer) {
 +        this.player = player;
 +        this.currentItem = currentItem == null ? null : currentItem.clone();
-+        this.platformEvent = platformEvent;
++        this.slotType = slotType;
++        this.action = action;
++        this.hotbarButton = hotbarButton;
 +        this.rawSlot = rawSlot;
 +        this.clickIdentifier = clickIdentifier;
 +        this.leftClick = leftClick;
@@ -524,6 +607,21 @@ index 0000000000000000000000000000000000000000..f8414b68cc3a0ec537f013a65e583799
 +    @Override
 +    public int getRawSlot() {
 +        return rawSlot;
++    }
++
++    @Override
++    public @NotNull InventoryType.SlotType getSlotType() {
++        return slotType;
++    }
++
++    @Override
++    public @NotNull InventoryAction getAction() {
++        return action;
++    }
++
++    @Override
++    public int getHotbarButton() {
++        return hotbarButton;
 +    }
 +
 +    @Override
@@ -577,11 +675,53 @@ index 0000000000000000000000000000000000000000..f8414b68cc3a0ec537f013a65e583799
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
-index b89eae09cdfbbc5c01ef378071801f9add48af63..e1ccb7b9309017dbf69102f1511518247a66f85f 100644
+index b89eae09cdfbbc5c01ef378071801f9add48af63..992fbb75c57e056a275b5d48f0817a4ee9f02122 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
-@@ -169,6 +169,12 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
+@@ -63,12 +63,31 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
  
+     @Override
+     public void updateTitleForPlayer(@NotNull String title, @NotNull Player player) {
+-        ((BukkitViewContainer) getContainer()).changeTitle(title, player);
++        getContainerOrThrow().changeTitle(title, viewerOf(player));
+     }
+ 
+     @Override
+     public void resetTitleForPlayer(@NotNull Player player) {
+-        ((BukkitViewContainer) getContainer()).changeTitle(null, player);
++        getContainerOrThrow().changeTitle(null, viewerOf(player));
++    }
++
++    /**
++     * Whether this context is backed by a real Bukkit {@link Inventory}. {@code false} when the packet GUI
++     * backend renders this context, in which case {@link #getInventory()} throws.
++     */
++    public boolean isBackedByRealInventory() {
++        return getContainerOrThrow() instanceof BukkitViewContainer;
++    }
++
++    private @NotNull Viewer viewerOf(@NotNull Player player) {
++        for (final Viewer viewer : getViewers()) {
++            if (viewer instanceof BukkitViewer
++                    && ((BukkitViewer) viewer).getPlayer().getUniqueId().equals(player.getUniqueId())) {
++                return viewer;
++            }
++        }
++
++        throw new IllegalArgumentException("Player is not a viewer of this context: " + player.getName());
+     }
+ 
+     /**
+@@ -167,8 +186,20 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
+         return "RenderContext{" + "player=" + player + "} " + super.toString();
+     }
+ 
++    /**
++     * The real Bukkit inventory backing this context.
++     *
++     * @throws UnsupportedOperationException When the packet GUI backend renders this context, because no real
++     * inventory exists then. Probe with {@link #isBackedByRealInventory()} first.
++     */
      @Override
      public @NotNull Inventory getInventory() {
 -        return ((BukkitViewContainer) getContainerOrThrow()).getInventory();
@@ -595,7 +735,7 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..e1ccb7b9309017dbf69102f151151824
      }
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
-index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d775d2ee670a09587aecd243ba66479351623b7c 100644
+index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..94ef0907fb4d553804c4687207b0e8b0318218c2 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 @@ -5,11 +5,8 @@ import me.devnatan.inventoryframework.ViewContainer;
@@ -622,7 +762,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d775d2ee670a09587aecd243ba664793
  
      @ApiStatus.Internal
      public SlotClickContext(
-@@ -32,30 +30,62 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -32,30 +30,67 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
              @Nullable Component clickedComponent,
              @NotNull InventoryClickEvent clickOrigin,
              boolean combined) {
@@ -666,9 +806,14 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d775d2ee670a09587aecd243ba664793
 +     * <p>
 +     * In the classic Bukkit inventory backend this is the real {@link InventoryClickEvent}. In the
 +     * packet GUI backend, where no real Bukkit event exists, a lightweight compatibility event is
-+     * synthesized lazily and returned instead; reading or mutating it (e.g.
-+     * {@link InventoryClickEvent#setCurrentItem(org.bukkit.inventory.ItemStack)}) is routed back to
-+     * the packet click origin and never touches a real server-side inventory.
++     * synthesized lazily.
++     * <p>
++     * On that synthesized event {@code getCurrentItem}, {@code setCurrentItem}, {@code getClickedInventory},
++     * {@code isCancelled}, {@code setCancelled}, {@code getRawSlot}, {@code getSlot}, {@code getSlotType},
++     * {@code getAction}, {@code getHotbarButton} and {@code getClick} are served from the packet click, with
++     * {@code getAction} being a best-effort mapping. {@code getInventory()}, {@code getCursor()} and
++     * {@code setCursor(...)} throw {@link UnsupportedOperationException}: a packet GUI has no real inventory,
++     * and writing the real cursor would turn a GUI display item into a real one.
 +     * <p>
 +     * The return type is kept as {@link InventoryClickEvent} for binary compatibility with existing
 +     * consumers compiled against the classic backend.
@@ -689,7 +834,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d775d2ee670a09587aecd243ba664793
      }
  
      /**
-@@ -84,12 +114,12 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -84,12 +119,13 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      @Override
      public final void setCancelled(boolean cancelled) {
          this.cancelled = cancelled;
@@ -700,11 +845,12 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d775d2ee670a09587aecd243ba664793
      @Override
      public final Object getPlatformEvent() {
 -        return clickOrigin;
-+        return clickOrigin.getPlatformEvent();
++        final Object platform = clickOrigin.getPlatformEvent();
++        return platform instanceof InventoryClickEvent ? platform : getClickOrigin();
      }
  
      @Override
-@@ -99,42 +129,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -99,42 +135,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
  
      @Override
      public final boolean isLeftClick() {
@@ -755,7 +901,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d775d2ee670a09587aecd243ba664793
      }
  
      @Override
-@@ -176,4 +206,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -176,4 +212,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      public final boolean isCombined() {
          return combined;
      }
@@ -769,13 +915,15 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d775d2ee670a09587aecd243ba664793
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..eb49a5a8ee944a53d7eb47528eb58e541a83d1b4
+index 0000000000000000000000000000000000000000..8046cc16d595b3eafebc38ecec3a99d871bddcd4
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,81 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.InventoryAction;
++import org.bukkit.event.inventory.InventoryType;
 +import org.bukkit.inventory.Inventory;
 +import org.bukkit.inventory.ItemStack;
 +import org.jetbrains.annotations.ApiStatus;
@@ -807,6 +955,29 @@ index 0000000000000000000000000000000000000000..eb49a5a8ee944a53d7eb47528eb58e54
 +    Object getPlatformEvent();
 +
 +    int getRawSlot();
++
++    /**
++     * The Bukkit slot type of the clicked slot.
++     */
++    @NotNull
++    default InventoryType.SlotType getSlotType() {
++        throw new UnsupportedOperationException("getSlotType is not available for " + getClass().getName());
++    }
++
++    /**
++     * The Bukkit action this click represents. Best effort on platforms without a real Bukkit event.
++     */
++    @NotNull
++    default InventoryAction getAction() {
++        throw new UnsupportedOperationException("getAction is not available for " + getClass().getName());
++    }
++
++    /**
++     * The hotbar slot index for a number-key click, or {@code -1} for every other click.
++     */
++    default int getHotbarButton() {
++        return -1;
++    }
 +
 +    boolean isLeftClick();
 +
@@ -1035,10 +1206,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..47d33671e613f6b2f584ef4a0a61af6820a47ba4
+index 0000000000000000000000000000000000000000..c979a67ba880405a887526d7b98854d87f2c75de
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1430 @@
+@@ -0,0 +1,1459 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1074,6 +1245,7 @@ index 0000000000000000000000000000000000000000..47d33671e613f6b2f584ef4a0a61af68
 +import org.bukkit.Bukkit;
 +import org.bukkit.entity.Entity;
 +import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.InventoryAction;
 +import org.bukkit.event.inventory.InventoryType;
 +import org.bukkit.inventory.InventoryView;
 +import org.bukkit.inventory.ItemStack;
@@ -1638,7 +1810,9 @@ index 0000000000000000000000000000000000000000..47d33671e613f6b2f584ef4a0a61af68
 +        final PacketSlotClickOrigin origin = new PacketSlotClickOrigin(
 +                session.player(),
 +                currentItem,
-+                click,
++                slotTypeOf(click, topSize),
++                actionOf(click),
++                click.isKeyboardClick() && !click.isOffhandSwapClick() ? click.button() : -1,
 +                click.slot(),
 +                click.clickIdentifier(),
 +                click.isLeftClick(),
@@ -2346,6 +2520,32 @@ index 0000000000000000000000000000000000000000..47d33671e613f6b2f584ef4a0a61af68
 +            // "wrong thread", which used to make every render reschedule itself forever.
 +            return null;
 +        }
++    }
++
++    private static InventoryType.SlotType slotTypeOf(PacketGuiClick click, int topSize) {
++        if (click.slot() < 0) {
++            return InventoryType.SlotType.OUTSIDE;
++        }
++
++        if (click.slot() >= topSize + 27 && click.slot() < topSize + 36) {
++            return InventoryType.SlotType.QUICKBAR;
++        }
++
++        return InventoryType.SlotType.CONTAINER;
++    }
++
++    /**
++     * Best-effort mapping from the wire click to a Bukkit action. The packet protocol carries less information
++     * than Bukkit's action enum, so this is a label for consumers, not a contract.
++     */
++    private static InventoryAction actionOf(PacketGuiClick click) {
++        if (click.isShiftClick()) return InventoryAction.MOVE_TO_OTHER_INVENTORY;
++        if (click.isKeyboardClick()) return InventoryAction.HOTBAR_SWAP;
++        if (click.isMiddleClick()) return InventoryAction.CLONE_STACK;
++        if (click.isLeftClick()) return InventoryAction.PICKUP_ALL;
++        if (click.isRightClick()) return InventoryAction.PICKUP_HALF;
++
++        return InventoryAction.NOTHING;
 +    }
 +
 +    private static Method optionalMethod(Class<?> owner, String name, Class<?>... parameterTypes) {
