@@ -1228,10 +1228,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..06ba925f0dd63cf361bc522787ff789757e26e63
+index 0000000000000000000000000000000000000000..6458e064215285e7135f863f7330411b93172b53
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1376 @@
+@@ -0,0 +1,1403 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1308,6 +1308,13 @@ index 0000000000000000000000000000000000000000..06ba925f0dd63cf361bc522787ff7897
 +    private final ConcurrentMap<UUID, PacketViewerInventory> viewerInventories = new ConcurrentHashMap<>();
 +    private final AtomicInteger nextWindowId = new AtomicInteger(1);
 +    private final Set<String> reportedUnsupportedTypes = ConcurrentHashMap.newKeySet();
++
++    /**
++     * Viewers currently inside {@link #open}. Outbound close packets seen while a viewer is in this set were
++     * caused by our own open sequence tearing down the previous view, not by the viewer closing the new one.
++     */
++    private final Set<UUID> openingViewers = ConcurrentHashMap.newKeySet();
++
 +    private volatile PacketGuiNativeOutboundSender nativeOutbound;
 +    private PacketListenerCommon listener;
 +    private volatile boolean available = true;
@@ -1490,26 +1497,34 @@ index 0000000000000000000000000000000000000000..06ba925f0dd63cf361bc522787ff7897
 +                container,
 +                viewerInventory);
 +
-+        // Publish before tearing down the previous session: closeSession runs the CLOSE pipeline, i.e.
-+        // arbitrary developer code that may re-enter open(). The conditional remove inside closeSession keeps
-+        // it from evicting this session.
-+        final PacketGuiSession previous = sessions.put(player.getUniqueId(), session);
-+        if (previous != null) {
-+            try {
-+                closeSession(previous, false, CLOSE_ORIGIN_SERVER, true, true);
-+            } catch (final RuntimeException exception) {
-+                owner.getLogger().log(Level.WARNING, "Failed to close the previous packet GUI session", exception);
++        // Tearing the previous session down runs its CLOSE pipeline, i.e. arbitrary developer and framework
++        // code. That code routinely ends up calling Player#closeInventory, whose outbound close packet must
++        // not be mistaken for the viewer closing the window we are in the middle of opening.
++        openingViewers.add(player.getUniqueId());
++        try {
++            // Publish before the teardown: the close pipeline may re-enter open(), and the conditional remove
++            // inside closeSession keeps it from evicting this session.
++            final PacketGuiSession previous = sessions.put(player.getUniqueId(), session);
++            if (previous != null) {
++                try {
++                    closeSession(previous, false, CLOSE_ORIGIN_SERVER, true, true);
++                } catch (final RuntimeException exception) {
++                    owner.getLogger()
++                            .log(Level.WARNING, "Failed to close the previous packet GUI session", exception);
++                }
 +            }
-+        }
 +
-+        if (sessions.get(player.getUniqueId()) != session) {
-+            // A close handler opened another view; that session owns the window now. Drop ours without running
-+            // its close pipeline - it was never opened - and without sending a close packet.
-+            closeSession(session, false, CLOSE_ORIGIN_SERVER, false, false);
-+            return;
-+        }
++            if (sessions.get(player.getUniqueId()) != session) {
++                // A close handler opened another view; that session owns the window now. Drop ours without
++                // running its close pipeline - it was never opened - and without sending a close packet.
++                closeSession(session, false, CLOSE_ORIGIN_SERVER, false, false);
++                return;
++            }
 +
-+        renderSession(session, true, true);
++            renderSession(session, true, true);
++        } finally {
++            openingViewers.remove(player.getUniqueId());
++        }
 +    }
 +
 +    /**
@@ -1640,8 +1655,20 @@ index 0000000000000000000000000000000000000000..06ba925f0dd63cf361bc522787ff7897
 +            return;
 +        }
 +
++        if (openingViewers.contains(user.getUUID())) {
++            // Emitted by our own open sequence while the previous view was being closed, not by the viewer
++            // closing the window we are opening.
++            return;
++        }
++
 +        final PacketGuiSession session = sessions.get(user.getUUID());
-+        if (isTracked(session)) {
++
++        // Only a close for our own window, or for the player container - which is what Player#closeInventory
++        // emits, since the server never knows about the fake window - means this session is going away. A
++        // close for any other window belongs to something else entirely.
++        final boolean closesThisSession = isTracked(session)
++                && (windowId == session.windowId() || windowId == PacketInventoryConstants.PLAYER_WINDOW_ID);
++        if (closesThisSession) {
 +            session.closeRequested(true);
 +            runOnPlayer(session.player(), () -> {
 +                final Player player = session.player();
