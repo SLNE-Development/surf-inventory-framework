@@ -69,18 +69,22 @@ index e050121d60d533fd55677306fc3d0ea06b011fd8..4b9a363340f204570bcdac70319e1fa7
  
          return value;
 diff --git a/inventory-framework-platform-bukkit/build.gradle.kts b/inventory-framework-platform-bukkit/build.gradle.kts
-index 6a29127fffd904f31720719a40c8f61bf4c1ae05..237bf07ee139b580f0148a28061fb36166787247 100644
+index 6a29127fffd904f31720719a40c8f61bf4c1ae05..82ffa251b58814e38dd326d136370e5d064bcbde 100644
 --- a/inventory-framework-platform-bukkit/build.gradle.kts
 +++ b/inventory-framework-platform-bukkit/build.gradle.kts
-@@ -13,6 +13,7 @@ dependencies {
+@@ -13,8 +13,11 @@ dependencies {
      api(projects.inventoryFrameworkPlatform)
      runtimeOnly(projects.inventoryFrameworkAnvilInput)
      compileOnly(libs.spigot)
 +    compileOnly(libs.packetevents.spigot)
      testCompileOnly(libs.spigot)
      testRuntimeOnly(libs.spigot)
++    testCompileOnly(libs.packetevents.spigot)
++    testRuntimeOnly(libs.packetevents.spigot)
      testImplementation(projects.inventoryFrameworkApi)
-@@ -39,5 +40,6 @@ bukkit {
+     testImplementation(projects.inventoryFrameworkTest)
+     implementation(libs.folialib)
+@@ -39,5 +42,6 @@ bukkit {
      website = "https://github.com/DevNatan/inventory-framework"
      apiVersion = "1.13"
      authors = listOf("SaiintBrisson", "DevNatan", "sasuked")
@@ -1007,7 +1011,7 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..b0f09c51843558bb1ef9ccb6f2710e1c3d0c746d
+index 0000000000000000000000000000000000000000..23049112f36d08a93d851f293fd1288e4fd14c42
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 @@ -0,0 +1,1250 @@
@@ -2263,7 +2267,7 @@ index 0000000000000000000000000000000000000000..b0f09c51843558bb1ef9ccb6f2710e1c
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..989fed145f2d8edbbe75581a3249ed808eb7a64c
+index 0000000000000000000000000000000000000000..7526b7afe435c3c0ae694a8a2c8345466e156348
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 @@ -0,0 +1,202 @@
@@ -2471,10 +2475,10 @@ index 0000000000000000000000000000000000000000..989fed145f2d8edbbe75581a3249ed80
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..3e614a1f5833fcc04075d73800a4658509bcefe4
+index 0000000000000000000000000000000000000000..fbebf59371b8e4a9cb757d045dd48671af45a769
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,425 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
@@ -2482,7 +2486,10 @@ index 0000000000000000000000000000000000000000..3e614a1f5833fcc04075d73800a46585
 +import java.lang.reflect.Method;
 +import java.util.ArrayList;
 +import java.util.List;
++import java.util.Objects;
 +import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.ConcurrentMap;
 +import org.bukkit.entity.Player;
 +import org.bukkit.inventory.ItemStack;
 +
@@ -2499,6 +2506,8 @@ index 0000000000000000000000000000000000000000..3e614a1f5833fcc04075d73800a46585
 +    private final Constructor<?> containerSetSlotConstructor;
 +    private final Constructor<?> setCursorItemConstructor;
 +    private final Constructor<?> setPlayerInventoryConstructor;
++    private final ConcurrentMap<Class<?>, Field> connectionFields = new ConcurrentHashMap<>();
++    private final ConcurrentMap<SendMethodKey, Method> sendMethods = new ConcurrentHashMap<>();
 +
 +    private PacketGuiNativeOutboundSender() {
 +        try {
@@ -2650,8 +2659,19 @@ index 0000000000000000000000000000000000000000..3e614a1f5833fcc04075d73800a46585
 +    }
 +
 +    private Object connection(Object handle) {
++        final Class<?> handleClass = handle.getClass();
++        final Field cachedField = connectionFields.get(handleClass);
++        if (cachedField != null) {
++            try {
++                return cachedField.get(handle);
++            } catch (final ReflectiveOperationException exception) {
++                connectionFields.remove(handleClass, cachedField);
++            }
++        }
++
 +        try {
-+            final Field connection = field(handle.getClass(), "connection");
++            final Field connection = field(handleClass, "connection");
++            connectionFields.putIfAbsent(handleClass, connection);
 +            return connection.get(handle);
 +        } catch (final ReflectiveOperationException ignored) {
 +            return discoverConnection(handle);
@@ -2666,6 +2686,7 @@ index 0000000000000000000000000000000000000000..3e614a1f5833fcc04075d73800a46585
 +                    field.setAccessible(true);
 +                    final Object value = field.get(handle);
 +                    if (value != null && findSendMethod(value.getClass(), packetClass) != null) {
++                        connectionFields.putIfAbsent(handle.getClass(), field);
 +                        return value;
 +                    }
 +                } catch (final ReflectiveOperationException ignored) {
@@ -2679,11 +2700,13 @@ index 0000000000000000000000000000000000000000..3e614a1f5833fcc04075d73800a46585
 +    }
 +
 +    private Method sendMethod(Class<?> connectionClass, Class<?> concretePacketClass) {
-+        final Method method = findSendMethod(connectionClass, concretePacketClass);
-+        if (method == null) {
-+            throw new IllegalStateException("Failed to find native player connection send method");
-+        }
-+        return method;
++        return sendMethods.computeIfAbsent(new SendMethodKey(connectionClass, concretePacketClass), key -> {
++            final Method method = findSendMethod(key.connectionClass, key.concretePacketClass);
++            if (method == null) {
++                throw new IllegalStateException("Failed to find native player connection send method");
++            }
++            return method;
++        });
 +    }
 +
 +    private Method findSendMethod(Class<?> connectionClass, Class<?> concretePacketClass) {
@@ -2748,6 +2771,38 @@ index 0000000000000000000000000000000000000000..3e614a1f5833fcc04075d73800a46585
 +
 +        throw new NoSuchFieldException(name);
 +    }
++
++    private static final class SendMethodKey {
++
++        private final Class<?> connectionClass;
++        private final Class<?> concretePacketClass;
++
++        private SendMethodKey(Class<?> connectionClass, Class<?> concretePacketClass) {
++            this.connectionClass = connectionClass;
++            this.concretePacketClass = concretePacketClass;
++        }
++
++        @Override
++        public boolean equals(Object other) {
++            if (this == other) {
++                return true;
++            }
++
++            if (!(other instanceof SendMethodKey)) {
++                return false;
++            }
++
++            final SendMethodKey that = (SendMethodKey) other;
++            return connectionClass.equals(that.connectionClass)
++                    && concretePacketClass.equals(that.concretePacketClass);
++        }
++
++        @Override
++        public int hashCode() {
++            return Objects.hash(connectionClass, concretePacketClass);
++        }
++    }
++
 +    static final class InitializationResult {
 +
 +        private final PacketGuiNativeOutboundSender sender;
@@ -4319,6 +4374,65 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
  
          final Component component = context.getComponent();
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b7b81adbc1430fe023c82a742ab5005fa01b64e
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstantsTest.java
+@@ -0,0 +1,53 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import org.junit.jupiter.api.Test;
++
++class PacketInventoryConstantsTest {
++
++    @Test
++    void mapsHotbarToTheEndOfThePlayerContainer() {
++        assertEquals(36, PacketInventoryConstants.playerInventorySlotToContainerSlot(0));
++        assertEquals(44, PacketInventoryConstants.playerInventorySlotToContainerSlot(8));
++    }
++
++    @Test
++    void keepsMainInventorySlotsUnchanged() {
++        assertEquals(9, PacketInventoryConstants.playerInventorySlotToContainerSlot(9));
++        assertEquals(35, PacketInventoryConstants.playerInventorySlotToContainerSlot(35));
++    }
++
++    @Test
++    void mapsArmourAndOffhand() {
++        assertEquals(8, PacketInventoryConstants.playerInventorySlotToContainerSlot(36));
++        assertEquals(7, PacketInventoryConstants.playerInventorySlotToContainerSlot(37));
++        assertEquals(6, PacketInventoryConstants.playerInventorySlotToContainerSlot(38));
++        assertEquals(5, PacketInventoryConstants.playerInventorySlotToContainerSlot(39));
++        assertEquals(45, PacketInventoryConstants.playerInventorySlotToContainerSlot(40));
++    }
++
++    @Test
++    void rejectsOutOfRangePlayerInventorySlots() {
++        assertEquals(-1, PacketInventoryConstants.playerInventorySlotToContainerSlot(-1));
++        assertEquals(-1, PacketInventoryConstants.playerInventorySlotToContainerSlot(41));
++    }
++
++    @Test
++    void rejectsUnmappableContainerSlots() {
++        assertEquals(-1, PacketInventoryConstants.containerSlotToPlayerInventorySlot(0));
++        assertEquals(-1, PacketInventoryConstants.containerSlotToPlayerInventorySlot(4));
++        assertEquals(-1, PacketInventoryConstants.containerSlotToPlayerInventorySlot(46));
++    }
++
++    @Test
++    void roundTripsEveryPlayerInventorySlot() {
++        for (int slot = 0; slot <= 40; slot++) {
++            final int containerSlot = PacketInventoryConstants.playerInventorySlotToContainerSlot(slot);
++            assertEquals(
++                    slot,
++                    PacketInventoryConstants.containerSlotToPlayerInventorySlot(containerSlot),
++                    "round trip failed for player inventory slot " + slot);
++        }
++    }
++}
 diff --git a/settings.gradle.kts b/settings.gradle.kts
 index 05585a2bd587532365bfe98563ecc18047386144..f26ceb55f94d93d4eaf30706bf82998bab48f278 100644
 --- a/settings.gradle.kts
