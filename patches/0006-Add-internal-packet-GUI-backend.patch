@@ -3,6 +3,36 @@ From: Keviro <keviro@slne.dev>
 Date: Mon, 25 May 2026 23:04:19 +0200
 Subject: [PATCH] Add internal packet GUI backend
 
+Renders GUI contents as virtual packet items instead of placing real items into
+Bukkit inventories, so GUI display items cannot be duplicated out of a menu. The
+public InventoryFramework API is unchanged and the Bukkit inventory backend stays
+available as a fallback.
+
+The backend is opt-in via -Dinventory-framework.gui-backend=packet and requires
+PacketEvents at runtime; without it the Bukkit backend is used.
+
+Outbound content packets are built and sent through a small reflective NMS sender
+rather than PacketEvents wrappers, because surf-api's PacketLore layer only sees
+packets that travel the server's own outbound path. The sender is isolated in
+PacketGuiNativeOutboundSender and gated by a startup capability probe: it resolves
+everything it needs and then constructs one of every packet it emits, so a
+signature mismatch disables packet mode in favour of the Bukkit backend instead of
+failing on the first GUI open. There is no Minecraft version allowlist.
+
+Click handling fails closed. The click packet is cancelled in the PacketEvents
+listener before the framework runs, and anything that is not an explicitly
+supported interaction is denied with a full resync and without invoking view
+callbacks. Only a plain pickup on slot -999 counts as an outside click, so drag
+and cursor-drop packets no longer reach the click pipeline.
+
+Window ids skip the id the viewer currently has open for a real container, and
+opening a packet GUI finalizes any real server-side menu first, so a fake window
+can never share an id with a live vanilla container.
+
+Known limitations: only chest-style containers are rendered with packet items, and
+the viewer's own inventory is read-only while a packet GUI is open unless a view
+explicitly un-cancels the click and rewrites the clicked item. See
+docs/packet-gui-backend.md.
 
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
 index 89850fa8d67a4ff08fbe5997ab94625e50c0cf19..daec84d3a7722c8390ae6624b01b84d52c596df9 100644
@@ -1040,10 +1070,10 @@ index 50f57dbc949c8cdc15ff0e908d46ac876adca3ed..f6dec24a61221bb5e56421ec85ecdcac
  
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d4e57da254cdf676539e0ee3ab3862b7e7e27a5f
+index 0000000000000000000000000000000000000000..a6a7f90ce6335143cf8fbeb694a414aef9183548
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/BukkitGuiBackend.java
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,25 @@
 +package me.devnatan.inventoryframework.internal;
 +
 +import me.devnatan.inventoryframework.BukkitViewContainer;
@@ -1052,8 +1082,13 @@ index 0000000000000000000000000000000000000000..d4e57da254cdf676539e0ee3ab3862b7
 +import me.devnatan.inventoryframework.context.IFContext;
 +import org.bukkit.inventory.Inventory;
 +import org.bukkit.inventory.InventoryHolder;
++import org.jetbrains.annotations.ApiStatus;
 +import org.jetbrains.annotations.NotNull;
 +
++/**
++ * The classic backend: every GUI is a real Bukkit {@link Inventory} holding real items.
++ */
++@ApiStatus.Internal
 +public final class BukkitGuiBackend implements GuiBackend {
 +
 +    @Override
@@ -1116,10 +1151,10 @@ index 0000000000000000000000000000000000000000..1ebc23498c0bf82552da3ef8c78d4333
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b32657233
+index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b2e2ea2e7
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackendFactory.java
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,71 @@
 +package me.devnatan.inventoryframework.internal;
 +
 +import java.util.logging.Logger;
@@ -1141,8 +1176,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +        final BukkitGuiBackend bukkitBackend = new BukkitGuiBackend();
 +        final String configuredBackend = System.getProperty(BACKEND_PROPERTY, "bukkit");
 +        if (!PACKET_BACKEND.equalsIgnoreCase(configuredBackend)) {
++            // The default, unconfigured path is not a problem worth a warning - only an explicit request for
++            // packet mode that could not be honoured is (see below).
 +            logger(owner)
-+                    .warning("[IF] GUI backend: Bukkit fallback enabled. "
++                    .fine("[IF] GUI backend: Bukkit fallback enabled. "
 +                            + "Inventory GUIs use real Bukkit inventory items. "
 +                            + "To enable packet mode, start the server with -D"
 +                            + BACKEND_PROPERTY
@@ -1191,10 +1228,10 @@ index 0000000000000000000000000000000000000000..a2f72b8c7cb581fb4b0c252a7595d98b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896d97f4b4e
+index 0000000000000000000000000000000000000000..709ee674e5a3138b04478939953cb3aedea76fc3
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1472 @@
+@@ -0,0 +1,1499 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1237,8 +1274,19 @@ index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896
 +import org.bukkit.inventory.ItemStack;
 +import org.bukkit.inventory.PlayerInventory;
 +import org.bukkit.plugin.Plugin;
++import org.jetbrains.annotations.ApiStatus;
 +import org.jetbrains.annotations.NotNull;
 +
++/**
++ * Renders GUIs as virtual packet items instead of placing real items into a Bukkit inventory.
++ *
++ * <p>Owns the per-viewer sessions and drives the whole flow: allocating a fake window id and sending the
++ * open-screen packet, diffing renders into content or per-slot packets, intercepting and classifying inbound
++ * clicks before vanilla can act on them, and tearing sessions down on close, quit, world change or shutdown.
++ * Falls back to {@link BukkitGuiBackend} whenever packet mode is unavailable or the container type is not
++ * chest-shaped.
++ */
++@ApiStatus.Internal
 +public final class PacketGuiBackend implements GuiBackend {
 +
 +    private static final String CLOSE_ORIGIN_CLIENT = "packet-gui-client-close";
@@ -1325,12 +1373,16 @@ index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896
 +                available = false;
 +                owner.getLogger()
 +                        .warning("[IF] GUI backend: Bukkit fallback enabled. "
-+                                + "Packet mode was requested, but the native packet GUI outbound sender is unavailable. "
++                                + "Packet mode was requested, but the native packet GUI outbound sender is "
++                                + "unavailable. "
 +                                + nativeSender.message()
 +                                + " Inventory GUIs use real Bukkit inventory items.");
 +                if (nativeSender.failure() != null) {
 +                    owner.getLogger()
-+                            .log(Level.WARNING, "[IF] Native packet GUI outbound sender self-check failed.", nativeSender.failure());
++                            .log(
++                                    Level.WARNING,
++                                    "[IF] Native packet GUI outbound sender self-check failed.",
++                                    nativeSender.failure());
 +                }
 +                return;
 +            }
@@ -1344,7 +1396,11 @@ index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896
 +                            + ". This is the recommended mode for preventing GUI item duplication.");
 +        } catch (final RuntimeException exception) {
 +            available = false;
-+            owner.getLogger().log(Level.WARNING, "Failed to register packet GUI backend. Falling back to Bukkit.", exception);
++            owner.getLogger()
++                    .log(
++                            Level.WARNING,
++                            "Failed to register packet GUI backend. Falling back to Bukkit.",
++                            exception);
 +        }
 +    }
 +
@@ -1920,7 +1976,8 @@ index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896
 +        }
 +    }
 +
-+    private void addOpenWindow(PacketGuiConversionPlan conversionPlan, PacketGuiSession session, PacketGuiRender render) {
++    private void addOpenWindow(
++            PacketGuiConversionPlan conversionPlan, PacketGuiSession session, PacketGuiRender render) {
 +        final ServerVersion version = PacketEvents.getAPI().getServerManager().getVersion();
 +        final boolean modernWindowType = version.isNewerThanOrEquals(ServerVersion.V_1_14);
 +        final int windowId = session.windowId();
@@ -2090,7 +2147,8 @@ index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896
 +        final ItemStack[] slots = new ItemStack[PacketInventoryConstants.INVENTORY_SIZE];
 +
 +        for (int slot = 0; slot <= 35; slot++) {
-+            slots[PacketInventoryConstants.playerInventorySlotToContainerSlot(slot)] = cloneItem(inventory.getItem(slot));
++            slots[PacketInventoryConstants.playerInventorySlotToContainerSlot(slot)] =
++                    cloneItem(inventory.getItem(slot));
 +        }
 +
 +        slots[PacketInventoryConstants.SLOT_HELMET] = cloneItem(inventory.getHelmet());
@@ -2284,13 +2342,19 @@ index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896
 +    }
 +
 +    private boolean closeSession(
-+            PacketGuiSession session, boolean sendClosePacket, Object origin, boolean callClose, boolean syncInventory) {
++            PacketGuiSession session,
++            boolean sendClosePacket,
++            Object origin,
++            boolean callClose,
++            boolean syncInventory) {
 +        if (session == null) {
 +            return false;
 +        }
 +
 +        if (!isOnPlayerThread(session.player()) && (sendClosePacket || callClose)) {
-+            runOnPlayer(session.player(), () -> closeSession(session, sendClosePacket, origin, callClose, syncInventory));
++            runOnPlayer(
++                    session.player(),
++                    () -> closeSession(session, sendClosePacket, origin, callClose, syncInventory));
 +            return true;
 +        }
 +
@@ -2669,15 +2733,23 @@ index 0000000000000000000000000000000000000000..48bd8555ef0a1fb41c724f40cfb3b896
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..79f9d50878de8ae5c091f17c8a7e92bc16acf2d7
+index 0000000000000000000000000000000000000000..bf3cf7aa62909849e7af6eacc801d8f92bac1e6f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,229 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
 +import java.util.Map;
 +
++/**
++ * An inbound container-click packet, decoded into the questions the backend actually asks of it: what kind of
++ * click it is, whether it is safe to route into the framework, which slots have to be repaired afterwards, and
++ * which Bukkit {@code ClickType} it corresponds to.
++ *
++ * <p>Immutable and free of PacketEvents state, so it can be built on the netty thread and handed to the
++ * player's thread without further synchronization.
++ */
 +final class PacketGuiClick {
 +
 +    private static final int OFFHAND_SWAP_BUTTON = 40;
@@ -2896,10 +2968,10 @@ index 0000000000000000000000000000000000000000..79f9d50878de8ae5c091f17c8a7e92bc
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c3fc8e898b89e93e21d9a4ff24b8630f6849bd14
+index 0000000000000000000000000000000000000000..251f44ed68dfba2c9f0a36b7d779ec1263c35a41
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,484 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
@@ -2912,6 +2984,15 @@ index 0000000000000000000000000000000000000000..c3fc8e898b89e93e21d9a4ff24b8630f
 +import org.bukkit.entity.Player;
 +import org.bukkit.inventory.ItemStack;
 +
++/**
++ * Builds and sends the GUI content packets through the server's own outbound path via reflection.
++ *
++ * <p>Deliberately not PacketEvents: surf-api's PacketLore layer only decorates packets that travel the
++ * server's native outbound path, so GUI items sent through PacketEvents would lose their dynamic lore. All
++ * NMS knowledge is confined to this class and gated by {@link #initialize()}, which resolves every class,
++ * constructor and field it needs and then constructs one of every packet as a self-check. Any mismatch makes
++ * the whole packet backend fall back to Bukkit inventories rather than fail at runtime.
++ */
 +final class PacketGuiNativeOutboundSender {
 +
 +    private static final String NATIVE_PROPERTY = "inventory-framework.gui-backend.native";
@@ -3377,10 +3458,10 @@ index 0000000000000000000000000000000000000000..c3fc8e898b89e93e21d9a4ff24b8630f
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..89cf420ff84c58826d06cbe9d92c4f9b3f074d03
+index 0000000000000000000000000000000000000000..6c57219bded1721625338161728081f06fca9813
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,129 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.event.PacketListenerAbstract;
@@ -3403,6 +3484,13 @@ index 0000000000000000000000000000000000000000..89cf420ff84c58826d06cbe9d92c4f9b
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetSlot;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerWindowItems;
 +
++/**
++ * The PacketEvents bridge: cancels click and close packets that belong to a packet GUI before vanilla can act
++ * on them, and watches outbound inventory packets to keep track of which real window a viewer has open.
++ *
++ * <p>Runs on netty threads. Everything here only captures packet data and hands it to
++ * {@link PacketGuiBackend}, which hops to the viewer's thread before touching any Bukkit state.
++ */
 +final class PacketGuiPacketListener extends PacketListenerAbstract {
 +
 +    private final PacketGuiBackend backend;
@@ -3505,16 +3593,22 @@ index 0000000000000000000000000000000000000000..89cf420ff84c58826d06cbe9d92c4f9b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7a3fda77476e1cdd99a01d98c7ca97f8d2b9be91
+index 0000000000000000000000000000000000000000..b08e2dc2684aa5ca04844b5f496a0a4e1c5174d5
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,77 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.Objects;
 +import net.kyori.adventure.text.Component;
 +import org.bukkit.inventory.ItemStack;
 +
++/**
++ * An immutable snapshot of one frame of a packet GUI: title, row count and top-slot items.
++ *
++ * <p>Two snapshots are diffed to decide whether the window has to be reopened, fully resent, or only patched
++ * slot by slot.
++ */
 +final class PacketGuiRender {
 +
 +    private final Object rawTitle;
@@ -3582,12 +3676,19 @@ index 0000000000000000000000000000000000000000..7a3fda77476e1cdd99a01d98c7ca97f8
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRepairScope.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRepairScope.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..bfe5e483593193cc8e62027a4e2684e0f6c0f8a0
+index 0000000000000000000000000000000000000000..862304c2a30d0bae12cb4165678016441db8c7e6
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRepairScope.java
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,39 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
++/**
++ * How much of the client's predicted state has to be corrected after a click.
++ *
++ * <p>The client simulates a click locally before the server answers, so every click needs a repair. The scope
++ * decides how targeted that repair can be; {@link #FULL_WINDOW} doubles as the fail-closed verdict for clicks
++ * the backend refuses to route into the framework.
++ */
 +enum PacketGuiRepairScope {
 +    NONE,
 +    TOP_SLOT_AND_CURSOR,
@@ -3620,10 +3721,10 @@ index 0000000000000000000000000000000000000000..bfe5e483593193cc8e62027a4e2684e0
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..96ae373865eef6117ae36003c3199b6d63e248f2
+index 0000000000000000000000000000000000000000..c41bf5c17d4e8533b5e343dd272e719c7cc97112
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,273 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
@@ -3633,6 +3734,14 @@ index 0000000000000000000000000000000000000000..96ae373865eef6117ae36003c3199b6d
 +import me.devnatan.inventoryframework.context.IFRenderContext;
 +import org.bukkit.entity.Player;
 +
++/**
++ * One viewer's open packet GUI: window id, container state id, the last applied render and the pending
++ * render request.
++ *
++ * <p>Touched from netty threads (inbound clicks) and the viewer's thread (rendering), so every accessor is
++ * synchronized on the session. Render requests are coalesced through a latch so a burst of slot changes
++ * produces a single render pass.
++ */
 +final class PacketGuiSession {
 +
 +    private final UUID viewerId;
@@ -3937,12 +4046,17 @@ index 0000000000000000000000000000000000000000..3552d4e9df03a9e574cd944611293013
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..e43f86319e18629837065af50a00b55afebaaa33
+index 0000000000000000000000000000000000000000..c6ed7053e89d189987f66763d4ecacdb4dd34c85
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketInventoryConstants.java
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,99 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
++/**
++ * The single source of truth for the protocol's inventory slot layout and every mapping between the three
++ * numbering schemes involved: Bukkit's {@code PlayerInventory} index, the player container's slot index, and
++ * the slot index inside an open chest-style GUI window.
++ */
 +final class PacketInventoryConstants {
 +
 +    static final int PLAYER_WINDOW_ID = 0;
@@ -4037,10 +4151,10 @@ index 0000000000000000000000000000000000000000..e43f86319e18629837065af50a00b55a
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..36d89dbbe2e6dfccc773206b109bfac77e5e0bd2
+index 0000000000000000000000000000000000000000..f244c5c220a03b273b1578a740ea8aa06143763e
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,223 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import io.github.retrooper.packetevents.util.SpigotConversionUtil;
@@ -4053,6 +4167,12 @@ index 0000000000000000000000000000000000000000..36d89dbbe2e6dfccc773206b109bfac7
 +import org.bukkit.inventory.ItemStack;
 +import org.bukkit.inventory.meta.ItemMeta;
 +
++/**
++ * Prepares Bukkit items for display in a packet GUI.
++ *
++ * <p>Normalizes the default italic styling Minecraft applies to custom item names and lore, and provides the
++ * cheap equality check the render diff uses to decide whether a slot actually changed.
++ */
 +final class PacketItemConverter {
 +
 +    private static final Method DISPLAY_NAME_GETTER = itemMetaMethod("displayName");
@@ -4260,10 +4380,10 @@ index 0000000000000000000000000000000000000000..36d89dbbe2e6dfccc773206b109bfac7
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..390fed3cabff5e3872e7eaedd211c8f7e8400cd7
+index 0000000000000000000000000000000000000000..6b1f73f28147bef735305a8fa43ed8c5a73648e2
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,284 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.Map;
@@ -4274,10 +4394,22 @@ index 0000000000000000000000000000000000000000..390fed3cabff5e3872e7eaedd211c8f7
 +import me.devnatan.inventoryframework.ViewType;
 +import me.devnatan.inventoryframework.Viewer;
 +import me.devnatan.inventoryframework.context.IFRenderContext;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.TextComponent;
++import net.kyori.adventure.text.TranslatableComponent;
 +import org.bukkit.inventory.ItemStack;
++import org.jetbrains.annotations.ApiStatus;
 +import org.jetbrains.annotations.NotNull;
 +import org.jetbrains.annotations.Nullable;
 +
++/**
++ * The authoritative virtual top container of a packet GUI.
++ *
++ * <p>Holds the rendered items and the per-viewer titles in plain arrays and maps; nothing here is ever a real
++ * Bukkit inventory, which is what keeps GUI display items from being duplicated out of a menu. Mutations mark
++ * the container dirty and ask {@link PacketGuiBackend} for a resync.
++ */
++@ApiStatus.Internal
 +public final class PacketViewContainer implements ViewContainer {
 +
 +    private final PacketGuiBackend backend;
@@ -4477,8 +4609,44 @@ index 0000000000000000000000000000000000000000..390fed3cabff5e3872e7eaedd211c8f7
 +        throw new IllegalStateException("Unsupported item type: " + item.getClass().getName());
 +    }
 +
++    /**
++     * Renders a configured title for {@link ViewContainer#getTitle()}.
++     *
++     * <p>Returns {@code null} when no title is set, so {@code PlatformContext#getTitle()} can fall back to the
++     * view type's default title, and serializes Adventure components to plain text instead of dumping
++     * {@code toString()} output.
++     */
 +    private static String titleAsString(Object title) {
-+        return title == null ? "" : String.valueOf(title);
++        if (title == null) {
++            return null;
++        }
++
++        if (title instanceof Component) {
++            final StringBuilder builder = new StringBuilder();
++            appendPlainText(builder, (Component) title);
++            return builder.toString();
++        }
++
++        return String.valueOf(title);
++    }
++
++    /**
++     * Renders a component tree as plain text.
++     *
++     * <p>Adventure's {@code PlainTextComponentSerializer} lives in a separate artifact this module does not
++     * depend on, and the only consumer of the result is {@link ViewContainer#getTitle()}, so walking the
++     * literal content is enough. Anything that is neither text nor translatable contributes only its children.
++     */
++    private static void appendPlainText(StringBuilder builder, Component component) {
++        if (component instanceof TextComponent) {
++            builder.append(((TextComponent) component).content());
++        } else if (component instanceof TranslatableComponent) {
++            builder.append(((TranslatableComponent) component).key());
++        }
++
++        for (final Component child : component.children()) {
++            appendPlainText(builder, child);
++        }
 +    }
 +
 +    @Override
@@ -4502,10 +4670,10 @@ index 0000000000000000000000000000000000000000..390fed3cabff5e3872e7eaedd211c8f7
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..49c1df0bc324fb4d7f4e71b40dc198ee968a0d54
+index 0000000000000000000000000000000000000000..47afe29fb8b215ba7596f95d8c9728a2f40453ee
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewerInventory.java
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,171 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.ArrayList;
@@ -4514,6 +4682,14 @@ index 0000000000000000000000000000000000000000..49c1df0bc324fb4d7f4e71b40dc198ee
 +import org.bukkit.entity.Player;
 +import org.bukkit.inventory.PlayerInventory;
 +
++/**
++ * Per-viewer packet-side state: which real window the viewer currently has open, plus a mirror of their
++ * inventory contents fed from outbound packets.
++ *
++ * <p>The open-window id is what keeps a fake GUI window from colliding with a live vanilla container. The
++ * item mirror is currently only written, not read - rendering reads the live Bukkit inventory instead - and is
++ * kept for the planned move to a fully authoritative packet-side model.
++ */
 +final class PacketViewerInventory {
 +
 +    private final com.github.retrooper.packetevents.protocol.item.ItemStack[] slots =
@@ -4533,7 +4709,9 @@ index 0000000000000000000000000000000000000000..49c1df0bc324fb4d7f4e71b40dc198ee
 +        final PlayerInventory inventory = player.getInventory();
 +
 +        for (int slot = 0; slot <= 35; slot++) {
-+            applySlot(PacketInventoryConstants.playerInventorySlotToContainerSlot(slot), PacketItemConverter.toPacket(inventory.getItem(slot)));
++            applySlot(
++                    PacketInventoryConstants.playerInventorySlotToContainerSlot(slot),
++                    PacketItemConverter.toPacket(inventory.getItem(slot)));
 +        }
 +
 +        applySlot(PacketInventoryConstants.SLOT_HELMET, PacketItemConverter.toPacket(inventory.getHelmet()));
@@ -4607,7 +4785,9 @@ index 0000000000000000000000000000000000000000..49c1df0bc324fb4d7f4e71b40dc198ee
 +    }
 +
 +    synchronized com.github.retrooper.packetevents.protocol.item.ItemStack cursor() {
-+        return cursorKnown ? PacketItemConverter.copy(cursor) : com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY;
++        return cursorKnown
++                ? PacketItemConverter.copy(cursor)
++                : com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY;
 +    }
 +
 +    synchronized List<com.github.retrooper.packetevents.protocol.item.ItemStack> mainAndHotbarItems() {
@@ -4657,7 +4837,8 @@ index 0000000000000000000000000000000000000000..49c1df0bc324fb4d7f4e71b40dc198ee
 +        return PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(topSize, containerSlot);
 +    }
 +
-+    private void appendRange(List<com.github.retrooper.packetevents.protocol.item.ItemStack> items, int sourceStart, int amount) {
++    private void appendRange(
++            List<com.github.retrooper.packetevents.protocol.item.ItemStack> items, int sourceStart, int amount) {
 +        for (int index = 0; index < amount; index++) {
 +            items.add(item(sourceStart + index));
 +        }
