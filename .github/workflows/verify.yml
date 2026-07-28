@@ -1,0 +1,50 @@
+name: Verify
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # gitpatcher commits every patch into the generated target repository, which git refuses to do
+      # without an identity.
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Apply patches
+        run: ./gradlew applyPatches --stacktrace
+
+      - name: Test
+        run: ./gradlew testPatched --stacktrace
+
+      # A patch that no longer round-trips is the fork's easiest mistake: hand-editing patches/, or editing
+      # the target repository without regenerating. Both produce a tree that builds locally and cannot be
+      # reproduced from the committed patches.
+      - name: Check that the patches are up to date
+        run: |
+          ./gradlew makePatches --stacktrace
+          if ! git diff --quiet -- patches; then
+            echo "::error::patches/ is out of sync with the target repository. Run './gradlew makePatches' and commit the result."
+            git diff --stat -- patches
+            exit 1
+          fi

@@ -35,14 +35,27 @@ val isWindows = System.getProperty("os.name")
 val targetDir = layout.projectDirectory.dir("inventory-framework")
 val gradlew = targetDir.file(if (isWindows) "gradlew.bat" else "gradlew").asFile.absolutePath
 
-listOf("shadowJar", "publish", "publishToMavenLocal").forEach { taskName ->
+// `test` is already taken by the `java` plugin on this project, so the delegating task carries a distinct
+// name. It is what CI runs to verify a pull request.
+val delegatedTasks = mapOf(
+    "shadowJar" to "shadowJar",
+    "publish" to "publish",
+    "publishToMavenLocal" to "publishToMavenLocal",
+    "testPatched" to "test",
+)
+
+delegatedTasks.forEach { (taskName, delegate) ->
     tasks.register<Exec>(taskName) {
-        group = if (taskName == "shadowJar") "build" else "publishing"
-        description = "Runs './gradlew $taskName' inside inventory-framework."
+        group = when (taskName) {
+            "shadowJar" -> "build"
+            "testPatched" -> "verification"
+            else -> "publishing"
+        }
+        description = "Runs './gradlew $delegate' inside inventory-framework."
 
         dependsOn("applyPatches")
         workingDir = targetDir.asFile
-        val args = listOf(taskName)
+        val args = listOf(delegate)
 
         if (isWindows) {
             commandLine("cmd", "/c", gradlew, *args.toTypedArray())
