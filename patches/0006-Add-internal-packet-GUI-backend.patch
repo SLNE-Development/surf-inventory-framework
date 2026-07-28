@@ -1228,10 +1228,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..02e6833d21f84f298584bbcae5b2b44261c4f98f
+index 0000000000000000000000000000000000000000..4539bd1242cdb1646d64ec2af6e3af5cb22993f1
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1216 @@
+@@ -0,0 +1,1224 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -2260,8 +2260,16 @@ index 0000000000000000000000000000000000000000..02e6833d21f84f298584bbcae5b2b442
 +        session.windowTracker().resetOpenWindow();
 +        if (sendClosePacket) {
 +            try {
++                // Both packets must travel the same transport. The cursor correction goes through the native
++                // connection queue; a close written straight to the channel can overtake it, and the client
++                // then applies the correction to its own inventory menu - the ghost item it was meant to clear.
++                final PacketGuiNativeOutboundSender sender = nativeOutbound;
 +                sendCursor(session);
-+                session.user().sendPacket(new WrapperPlayServerCloseWindow(session.windowId()));
++                if (sender != null && sender.canSendCloseWindow()) {
++                    sender.sendCloseWindow(session.player(), session.windowId());
++                } else {
++                    session.user().sendPacket(new WrapperPlayServerCloseWindow(session.windowId()));
++                }
 +            } catch (final RuntimeException exception) {
 +                owner.getLogger().log(Level.WARNING, "Failed to send packet GUI close packet", exception);
 +            }
@@ -2700,10 +2708,10 @@ index 0000000000000000000000000000000000000000..0da7f70a1658150890b2500d7251bef4
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..251f44ed68dfba2c9f0a36b7d779ec1263c35a41
+index 0000000000000000000000000000000000000000..196be89c5dab50da4ba15107d02df0f24d0babdc
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,504 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
@@ -2740,6 +2748,7 @@ index 0000000000000000000000000000000000000000..251f44ed68dfba2c9f0a36b7d779ec12
 +    private final Constructor<?> containerSetSlotConstructor;
 +    private final Constructor<?> setCursorItemConstructor;
 +    private final Constructor<?> setPlayerInventoryConstructor;
++    private final Constructor<?> containerCloseConstructor;
 +    private final ConcurrentMap<Class<?>, Field> connectionFields = new ConcurrentHashMap<>();
 +    private final ConcurrentMap<Class<?>, Method> sendMethods = new ConcurrentHashMap<>();
 +
@@ -2778,6 +2787,8 @@ index 0000000000000000000000000000000000000000..251f44ed68dfba2c9f0a36b7d779ec12
 +                    "net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket",
 +                    int.class,
 +                    nmsItemStackClass);
++            this.containerCloseConstructor = optionalConstructor(
++                    "net.minecraft.network.protocol.game.ClientboundContainerClosePacket", int.class);
 +        } catch (final ReflectiveOperationException exception) {
 +            throw new IllegalStateException("Failed to initialize native packet GUI item sender", exception);
 +        }
@@ -2838,6 +2849,9 @@ index 0000000000000000000000000000000000000000..251f44ed68dfba2c9f0a36b7d779ec12
 +        if (setPlayerInventoryConstructor != null) {
 +            construct(setPlayerInventoryConstructor, 0, emptyItemStack);
 +        }
++        if (containerCloseConstructor != null) {
++            construct(containerCloseConstructor, 1);
++        }
 +    }
 +
 +    void sendContainerSetContent(
@@ -2883,6 +2897,20 @@ index 0000000000000000000000000000000000000000..251f44ed68dfba2c9f0a36b7d779ec12
 +
 +    void sendContainerSetSlot(Player player, int windowId, int stateId, int slot, ItemStack item) {
 +        send(player, construct(containerSetSlotConstructor, windowId, stateId, slot, toNmsItem(item)));
++    }
++
++    /**
++     * Whether this sender can close a window itself.
++     *
++     * <p>When it can, the close travels the same queue as the cursor correction that precedes it. Sending the
++     * close through a different transport lets it overtake that correction and leave a ghost item behind.
++     */
++    boolean canSendCloseWindow() {
++        return containerCloseConstructor != null;
++    }
++
++    void sendCloseWindow(Player player, int windowId) {
++        send(player, construct(containerCloseConstructor, windowId));
 +    }
 +
 +    void sendCursor(Player player, ItemStack item) {

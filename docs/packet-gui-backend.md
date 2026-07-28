@@ -45,7 +45,13 @@ There is no Minecraft version allowlist. On startup `PacketGuiNativeOutboundSend
 1. resolves every NMS class, constructor, field and method it needs,
 2. probes both shapes of the `ClientboundContainerSetContentPacket` constructor (`NonNullList` and `List`),
 3. runs a **self-check** that actually constructs one of every packet it will ever send — container content,
-   container slot, cursor and player inventory slot — without sending anything.
+   container slot, cursor, player inventory slot and container close — without sending anything.
+
+The close packet travels the native connection like everything else that follows a cursor correction, so the
+two cannot arrive out of order. The open-screen packet is the one exception and still goes through
+PacketEvents: it carries a chat component, which would mean converting an Adventure component into an NMS one,
+and the ordering hazard does not apply to it — the content packets that follow it are queued behind the
+connection, so they can never overtake a direct channel write.
 
 Only if all three succeed is packet mode enabled. Any mismatch produces a single warning naming the detected
 Minecraft version, and every GUI silently keeps using real Bukkit inventory items.
