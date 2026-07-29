@@ -5119,10 +5119,10 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..fc33971ee16bb9cfe4cf303e278045775b3891f9
+index 0000000000000000000000000000000000000000..395334ded24259b90dca028b8199e2f26a733e63
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,233 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -5249,6 +5249,57 @@ index 0000000000000000000000000000000000000000..fc33971ee16bb9cfe4cf303e27804577
 +        }
 +    }
 +
++    /**
++     * The bottom-inventory routing decision, which is this backend's headline click behaviour and a deliberate
++     * deviation from the old "cancel or ignore bottom clicks" rule. Nothing asserted PLAYER_INVENTORY as an
++     * output before, so the whole branch could be deleted with the suite still green.
++     */
++    @Test
++    void routesSafeBottomClicksToThePlayerInventoryScope() {
++        final int firstBottomSlot = TOP_SIZE;
++        final int lastBottomSlot = TOP_SIZE + 35;
++
++        assertEquals(
++                PacketGuiRepairScope.PLAYER_INVENTORY,
++                PacketGuiClick.of(1, firstBottomSlot, 0, WindowClickType.PICKUP).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.PLAYER_INVENTORY,
++                PacketGuiClick.of(1, lastBottomSlot, 1, WindowClickType.PICKUP).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.PLAYER_INVENTORY,
++                PacketGuiClick.of(1, firstBottomSlot, 4, WindowClickType.SWAP).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.PLAYER_INVENTORY,
++                PacketGuiClick.of(1, firstBottomSlot, 2, WindowClickType.CLONE).repairScope(TOP_SIZE));
++    }
++
++    /** Everything else on a bottom slot still fails closed. */
++    @Test
++    void deniesUnsafeBottomClicks() {
++        final int bottomSlot = TOP_SIZE + 4;
++
++        assertEquals(
++                PacketGuiRepairScope.FULL_WINDOW,
++                PacketGuiClick.of(1, bottomSlot, 0, WindowClickType.QUICK_MOVE).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.FULL_WINDOW,
++                PacketGuiClick.of(1, bottomSlot, 0, WindowClickType.THROW).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.FULL_WINDOW,
++                PacketGuiClick.of(1, bottomSlot, 0, WindowClickType.PICKUP_ALL).repairScope(TOP_SIZE));
++        assertEquals(
++                PacketGuiRepairScope.FULL_WINDOW,
++                PacketGuiClick.of(1, bottomSlot, 0, WindowClickType.QUICK_CRAFT).repairScope(TOP_SIZE));
++    }
++
++    /** A slot past the window's bottom rows belongs to no inventory and must not be routed anywhere. */
++    @Test
++    void treatsSlotsBeyondTheBottomRowsAsOutOfRange() {
++        assertFalse(PacketGuiClick.of(1, TOP_SIZE + 36, 0, WindowClickType.PICKUP).isPlayerInventoryClick(TOP_SIZE));
++        assertTrue(PacketGuiClick.of(1, TOP_SIZE + 35, 0, WindowClickType.PICKUP).isPlayerInventoryClick(TOP_SIZE));
++        assertFalse(PacketGuiClick.of(1, TOP_SIZE - 1, 0, WindowClickType.PICKUP).isPlayerInventoryClick(TOP_SIZE));
++    }
++
 +    /** The drop key must not be dragged into the outside-click widening. */
 +    @Test
 +    void theDropKeyIsStillNeitherLeftNorRightClick() {
@@ -5307,10 +5358,10 @@ index 0000000000000000000000000000000000000000..fc33971ee16bb9cfe4cf303e27804577
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..643b57b48087df6f350b5f22f58176f6b358d0aa
+index 0000000000000000000000000000000000000000..c1fc4987e246b39c4a91902b5452d66cd7b777a3
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,253 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -5498,6 +5549,66 @@ index 0000000000000000000000000000000000000000..643b57b48087df6f350b5f22f58176f6
 +        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
 +        assertEquals(0, request.forcedTopSlotRepairs().length);
 +        assertEquals(0, request.playerSlotRepairs().length);
++    }
++
++    /**
++     * The number-key swap path. {@code swappedPlayerWindowSlot()} feeds the repair list, and nothing exercised
++     * it before - the whole {@code scheduleChangedPlayerSlotRepairs} body ran only with empty data.
++     */
++    @Test
++    void recordsTheHotbarSlotOfANumberKeySwap() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(
++                false,
++                false,
++                PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_PLAYER_SLOT,
++                PacketGuiClick.of(1, 2, 3, WindowClickType.SWAP));
++
++        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
++        assertTrue(request.forcedTopSlotRepairs()[2], "the clicked top slot");
++        assertArrayEquals(
++                new int[] {PacketInventoryConstants.HOTBAR_START + 3},
++                request.playerSlotRepairs(),
++                "the hotbar slot the item was swapped with");
++    }
++
++    /**
++     * The shift-click path, where the client tells us which slots it changed. {@code PacketGuiClick.of} has
++     * carried a varargs {@code changedSlots} parameter for tests since it was written and no test ever passed
++     * one, so this loop had never run with data.
++     */
++    @Test
++    void mapsTheClientReportedChangedSlotsToPlayerWindowSlots() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        // 30 and 31 are bottom slots of the window; 5 is a top slot and has no player-window equivalent.
++        requests.schedule(
++                false,
++                false,
++                PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_PLAYER_SLOT,
++                PacketGuiClick.of(1, 5, 0, WindowClickType.QUICK_MOVE, 5, 30, 31));
++
++        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
++        assertTrue(request.forcedTopSlotRepairs()[5]);
++        assertArrayEquals(
++                new int[] {PacketInventoryConstants.ITEMS_START + 3, PacketInventoryConstants.ITEMS_START + 4},
++                request.playerSlotRepairs(),
++                "only the changed slots that map into the player's inventory");
++    }
++
++    /** Consuming a frame nobody scheduled must be harmless rather than throwing or latching. */
++    @Test
++    void consumingWithoutSchedulingYieldsAnEmptyFrame() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
++        assertFalse(request.forceReopen());
++        assertFalse(request.hardResync());
++        assertEquals(0, request.forcedTopSlotRepairs().length);
++        assertEquals(0, request.playerSlotRepairs().length);
++
++        assertTrue(requests.schedule(false, false, PacketGuiRepairScope.NONE, null), "the latch must still open");
 +    }
 +
 +    private static PacketGuiClick click(int slot, WindowClickType clickType) {

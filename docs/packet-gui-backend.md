@@ -29,14 +29,18 @@ suspected packet problem — start with:
 That makes the sender report itself unavailable, which in turn falls the whole packet backend back to Bukkit
 inventories.
 
-When a click does not reach a view, log every inbound click and the routing decision taken for it:
+To see how clicks on an open packet GUI are being routed:
 
 ```
 -Dinventory-framework.gui-backend.debug-clicks=true
 ```
 
-Each click then produces one INFO line naming the window id, slot, button, click type, the computed repair
-scope and whether it was routed into the click pipeline or denied.
+Every click that lands on a live packet GUI window produces one INFO line naming the window id, slot, button,
+click type, the computed repair scope and whether it was routed into the click pipeline or denied.
+
+Note what the *absence* of a line means: the logging sits behind the same window-id and session checks as the
+routing itself, so a click that produces no line at all never matched a live session — the window is stale, or
+that GUI is on the Bukkit backend.
 
 ## How availability is decided
 
@@ -48,13 +52,16 @@ There is no Minecraft version allowlist. On startup `PacketGuiNativeOutboundSend
    container slot, cursor, player inventory slot and container close — without sending anything.
 
 The close packet travels the native connection like everything else that follows a cursor correction, so the
-two cannot arrive out of order. The open-screen packet is the one exception and still goes through
+two cannot arrive out of order — **provided the close constructor resolved**. It is probed as optional, and if
+it is absent the close falls back to the PacketEvents wrapper while the cursor correction stays on the native
+connection, which is exactly the split transport this paragraph otherwise rules out. The open-screen packet is the one exception and still goes through
 PacketEvents: it carries a chat component, which would mean converting an Adventure component into an NMS one,
 and the ordering hazard does not apply to it — the content packets that follow it are queued behind the
 connection, so they can never overtake a direct channel write.
 
-Only if all three succeed is packet mode enabled. Any mismatch produces a single warning naming the detected
-Minecraft version, and every GUI silently keeps using real Bukkit inventory items. That includes mismatches
+Only if all three succeed is packet mode enabled. Any mismatch produces a warning naming the detected
+Minecraft version — plus a second warning carrying the stack trace when a failure was captured — and every GUI
+silently keeps using real Bukkit inventory items. That includes mismatches
 that surface as `Error` rather than exception — a class that is present but cannot be linked or initialized —
 because those would otherwise abort the owning plugin's enable instead of falling back.
 
@@ -67,7 +74,9 @@ mode, releases every open session back to real inventories, and logs one warning
 
 Startup log lines to look for:
 
-- `Native packet GUI probe detected Minecraft <version> (…)` — always logged, tells you what was detected.
+- `Native packet GUI probe detected Minecraft <version> (…)` — logged whenever packet mode was requested and
+  PacketEvents was initialized. Its absence means the backend stopped before the probe; look for the
+  PacketEvents warning instead.
 - `Packet mode enabled. Inventory GUIs are rendered with fake packet items.` — the good case.
 - `Bukkit fallback enabled. …` at WARNING — packet mode was requested but could not be honoured. The message
   names the reason.
@@ -78,12 +87,22 @@ Startup log lines to look for:
   dropper, dispenser and every other type keep using real Bukkit inventories with real items. The first time
   such a type is encountered it is logged once at INFO.
 - **The viewer's own inventory is effectively read-only while a packet GUI is open.** Click packets are
-  cancelled before vanilla sees them, so nothing moves by itself. A view can still act on bottom-inventory
-  clicks: the click is delivered as an entity-container click, and whatever `clickOrigin.currentItem` holds
-  when the handler returns is written back to the real slot — **unless the handler cancels the click**. Like
-  the Bukkit backend, the click context starts *uncancelled*, so the write-back is opt-out, not opt-in. For a
-  handler that leaves `currentItem` alone it is a no-op; a handler that changes it for display purposes only
-  must call `setCancelled(true)`. Vanilla pickup/swap/quick-move semantics are deliberately not emulated.
+  cancelled before vanilla sees them, so nothing moves by itself. Vanilla pickup/swap/quick-move semantics are
+  deliberately not emulated.
+
+  A view can still act on bottom-inventory clicks: the click is delivered as an entity-container click, and
+  whatever `clickOrigin.currentItem` holds at the end of the CLICK pipeline is written back to the real slot —
+  **but only if the click ends the pipeline uncancelled.** Cancellation has two sources, and the second is easy
+  to miss:
+
+  1. the handler itself calling `setCancelled(true)`, and
+  2. the **view's configuration**: `GlobalClickInterceptor` cancels every click on a view built with
+     `cancelOnClick()`, before any of it reaches your code.
+
+  So on a default view the write-back is opt-out, and on a `cancelOnClick()` view — which most GUI views are —
+  it is opt-in. On such a view the only place that can restore it is `View#onClick`, which runs *inside*
+  `GlobalClickInterceptor` after the config has been applied; a component or slot click handler runs earlier,
+  so a `setCancelled(false)` there is silently overridden.
 - **Drag, double-click, the drop key and unknown click modes are denied.** They are cancelled and answered
   with a full resync; no view callback runs for them.
 - **Outside clicks are routed.** The protocol has two wire forms for them, and both are accepted on a negative
