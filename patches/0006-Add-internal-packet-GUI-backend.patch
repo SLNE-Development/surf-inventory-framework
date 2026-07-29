@@ -1274,10 +1274,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c19f114c8f0a37f485ba640a6a4ba5d59950ac49
+index 0000000000000000000000000000000000000000..a44e3f3cf88652fa1d12f91ea33d38a197473c78
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1276 @@
+@@ -0,0 +1,1314 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1686,8 +1686,23 @@ index 0000000000000000000000000000000000000000..c19f114c8f0a37f485ba640a6a4ba5d5
 +        if (!isTracked(session) || session.windowId() != windowId) {
 +            return;
 +        }
-+        session.windowTracker().closeWindow(windowId);
++
 +        runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true, true));
++    }
++
++    /**
++     * Records that the viewer closed a real container.
++     *
++     * <p>Vanilla does not echo a close packet when the <em>client</em> closes a window, so the inbound packet
++     * is the only place this can be observed. Without it the tracker keeps naming a window the viewer left
++     * long ago and {@link PacketGuiWindowIds} skips an id that is free.
++     */
++    void handleExternalInventoryClose(User user, int windowId) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        closeTrackedWindow(user.getUUID(), windowId);
 +    }
 +
 +    void handleExternalInventoryOpen(User user, int windowId) {
@@ -1739,7 +1754,18 @@ index 0000000000000000000000000000000000000000..c19f114c8f0a37f485ba640a6a4ba5d5
 +            return;
 +        }
 +
-+        windowTrackerFor(user.getUUID()).closeWindow(windowId);
++        closeTrackedWindow(user.getUUID(), windowId);
++    }
++
++    /**
++     * Clears the tracked external window without creating a tracker for a viewer that has none - this runs
++     * for every player on the server, not just those with a packet GUI open.
++     */
++    private void closeTrackedWindow(UUID viewerId, int windowId) {
++        final PacketViewerWindowTracker tracker = windowTrackers.get(viewerId);
++        if (tracker != null) {
++            tracker.closeWindow(windowId);
++        }
 +    }
 +
 +    void handleDisconnect(UUID viewerId) {
@@ -1807,20 +1833,6 @@ index 0000000000000000000000000000000000000000..c19f114c8f0a37f485ba640a6a4ba5d5
 +            return;
 +        }
 +
-+        final List<Integer> guiSlots = new ArrayList<>(36);
-+        final List<Integer> playerSlots = new ArrayList<>(36);
-+        for (int slot = PacketInventoryConstants.ITEMS_START;
-+                slot < PacketInventoryConstants.HOTBAR_START + 9;
-+                slot++) {
-+            final int guiSlot = mapPlayerWindowSlotToOpenGuiSlot(session.container().getSize(), slot);
-+            if (guiSlot < 0) {
-+                continue;
-+            }
-+
-+            guiSlots.add(guiSlot);
-+            playerSlots.add(slot);
-+        }
-+
 +        runOnPlayer(session.player(), () -> {
 +            final PacketGuiNativeOutboundSender sender = nativeOutbound;
 +            if (sender == null || !isTracked(session) || session.closeRequested()) {
@@ -1828,21 +1840,47 @@ index 0000000000000000000000000000000000000000..c19f114c8f0a37f485ba640a6a4ba5d5
 +            }
 +
 +            try {
-+                final int stateId = session.nextStateId();
-+                for (int index = 0; index < guiSlots.size(); index++) {
-+                    sender.sendContainerSetSlot(
-+                            session.player(),
-+                            session.windowId(),
-+                            stateId,
-+                            guiSlots.get(index),
-+                            cloneItem(playerInventoryItem(session.player(), playerSlots.get(index))));
-+                }
++                // One content packet rather than 36 slot packets. The trigger is any player#updateInventory
++                // while a GUI is open, which the backend itself performs on close and which other plugins
++                // call routinely, so the difference is not academic.
++                sender.sendContainerSetContent(
++                        session.player(),
++                        session.windowId(),
++                        session.nextStateId(),
++                        currentWindowContents(session),
++                        cloneItem(session.player().getItemOnCursor()));
 +            } catch (final RuntimeException exception) {
 +                owner.getLogger()
 +                        .log(Level.WARNING, "Failed to mirror the player inventory into a packet GUI", exception);
 +                closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
 +            }
 +        });
++    }
++
++    /**
++     * The full slot list of an open GUI window: the rendered top rows followed by the viewer's live main
++     * inventory and hotbar, in the order the container content packet expects them.
++     *
++     * <p>The top rows come from the last applied render so a mirror pass cannot roll the window back to
++     * whatever the container held at some other point in time.
++     */
++    private static List<ItemStack> currentWindowContents(PacketGuiSession session) {
++        final int topSize = session.container().getSize();
++        final PacketGuiRender render = session.appliedRender();
++        final boolean useRender = render != null && render.size() == topSize;
++
++        final List<ItemStack> items = new ArrayList<>(topSize + 36);
++        for (int slot = 0; slot < topSize; slot++) {
++            items.add(useRender ? render.bukkitItem(slot) : session.container().item(slot));
++        }
++
++        for (int slot = PacketInventoryConstants.ITEMS_START;
++                slot < PacketInventoryConstants.HOTBAR_START + 9;
++                slot++) {
++            items.add(cloneItem(playerInventoryItem(session.player(), slot)));
++        }
++
++        return items;
 +    }
 +
 +    private void mirrorPlayerInventorySlot(UUID viewerId, int playerWindowSlot) {
@@ -3316,10 +3354,10 @@ index 0000000000000000000000000000000000000000..196be89c5dab50da4ba15107d02df0f2
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..e1a675ee337048beb08aa0c87f65017b8421be2e
+index 0000000000000000000000000000000000000000..7b618da100d97fbc4796f78783e465842fa8d1ed
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,137 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.event.PacketListenerAbstract;
@@ -3376,12 +3414,15 @@ index 0000000000000000000000000000000000000000..e1a675ee337048beb08aa0c87f65017b
 +
 +        if (packetType == PacketType.Play.Client.CLOSE_WINDOW) {
 +            final WrapperPlayClientCloseWindow packet = new WrapperPlayClientCloseWindow(event);
-+            if (!backend.isGuiWindow(event.getUser(), packet.getWindowId())) {
++            if (backend.isGuiWindow(event.getUser(), packet.getWindowId())) {
++                event.setCancelled(false);
++                backend.handleWindowClose(event.getUser(), packet.getWindowId());
 +                return;
 +            }
 +
-+            event.setCancelled(false);
-+            backend.handleWindowClose(event.getUser(), packet.getWindowId());
++            // The server never echoes a close packet for a window the client closed itself, so this is the
++            // only chance to notice that a real container is gone.
++            backend.handleExternalInventoryClose(event.getUser(), packet.getWindowId());
 +        }
 +    }
 +
@@ -3584,10 +3625,10 @@ index 0000000000000000000000000000000000000000..862304c2a30d0bae12cb416567801644
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..caf7e4bcdc4b93a38b5bb856499a69cdfe2ecec3
+index 0000000000000000000000000000000000000000..87f177266bd5be45723fe11ff9a2c6d7b2d618d7
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,278 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
@@ -3601,9 +3642,10 @@ index 0000000000000000000000000000000000000000..caf7e4bcdc4b93a38b5bb856499a69cd
 + * One viewer's open packet GUI: window id, container state id, the last applied render and the pending
 + * render request.
 + *
-+ * <p>Touched from netty threads (inbound clicks) and the viewer's thread (rendering), so every accessor is
-+ * synchronized on the session. Render requests are coalesced through a latch so a burst of slot changes
-+ * produces a single render pass.
++ * <p>Touched from netty threads (inbound clicks) and the viewer's thread (rendering), so every accessor of
++ * mutable state is synchronized on the session; the immutable identity of the session is readable without a
++ * lock. Render requests are coalesced through a latch so a burst of slot changes produces a single render
++ * pass.
 + */
 +final class PacketGuiSession {
 +
@@ -3642,35 +3684,39 @@ index 0000000000000000000000000000000000000000..caf7e4bcdc4b93a38b5bb856499a69cd
 +        this.windowTracker = windowTracker;
 +    }
 +
-+    synchronized UUID viewerId() {
++    // The identity of a session never changes, so these accessors take no lock. That matters because they
++    // are read from netty threads on every inbound packet, which must not be able to block behind a render
++    // holding the session monitor.
++
++    UUID viewerId() {
 +        return viewerId;
 +    }
 +
-+    synchronized BukkitViewer viewer() {
++    BukkitViewer viewer() {
 +        return viewer;
 +    }
 +
-+    synchronized Player player() {
++    Player player() {
 +        return player;
 +    }
 +
-+    synchronized User user() {
++    User user() {
 +        return user;
 +    }
 +
-+    synchronized int windowId() {
++    int windowId() {
 +        return windowId;
 +    }
 +
-+    synchronized PacketViewContainer container() {
++    PacketViewContainer container() {
 +        return container;
 +    }
 +
-+    synchronized IFRenderContext context() {
++    IFRenderContext context() {
 +        return container.getContext();
 +    }
 +
-+    synchronized PacketViewerWindowTracker windowTracker() {
++    PacketViewerWindowTracker windowTracker() {
 +        return windowTracker;
 +    }
 +
