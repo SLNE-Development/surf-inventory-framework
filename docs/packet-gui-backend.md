@@ -92,6 +92,16 @@ Startup log lines to look for:
   The negative slot is what separates these from their in-window meaning — `THROW` on a real slot is the drop
   key and stays denied, and drag (`QUICK_CRAFT`) carries a negative slot too but is never treated as a click.
   Consumers see such a click as `ClickType.LEFT`/`RIGHT` with `SlotType.OUTSIDE`, matching the Bukkit backend.
+- **No Bukkit `InventoryOpenEvent` or `InventoryCloseEvent` is fired for a packet GUI.** There is no real
+  inventory to fire them for, and the inbound close packet is cancelled before vanilla sees it. A view's own
+  `onClose` is unaffected — the framework's CLOSE pipeline runs exactly as before — but a plugin that listens
+  for `InventoryCloseEvent` to notice a GUI closing will not hear about packet GUIs. Use the framework's own
+  close callback instead.
+
+  Up to `7f808d9` the close packet was let through, which made vanilla run its close handling against the
+  player's *own* inventory menu; the resulting `InventoryCloseEvent` therefore described the player's inventory
+  rather than any GUI. Anything that relied on it was reacting to a misleading event, not a useful one.
+
 - **`RenderContext#getInventory()` throws** `UnsupportedOperationException` in packet mode. Probe with
   `RenderContext#isBackedByRealInventory()` first.
 - **`SlotClickContext#getClickOrigin()` returns a synthesized `InventoryClickEvent`.** Item access,
