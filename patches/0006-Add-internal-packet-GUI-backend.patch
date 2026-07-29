@@ -1274,10 +1274,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845e160f65f
+index 0000000000000000000000000000000000000000..fefbba64f8ebb494f7258ee62c7e8aa6c434427f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1338 @@
+@@ -0,0 +1,1420 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1358,7 +1358,11 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +
 +    /**
 +     * Viewers currently inside {@link #open}. Outbound close packets seen while a viewer is in this set were
-+     * caused by our own open sequence tearing down the previous view, not by the viewer closing the new one.
++     * caused by our own open sequence tearing down the previous view, not by the viewer closing the new one,
++     * and are dropped rather than forwarded.
++     *
++     * <p>Read from netty threads, so membership deliberately outlives {@code open()} by one turn of the
++     * connection's event loop - see {@link #releaseOpeningMarker}.
 +     */
 +    private final Set<UUID> openingViewers = ConcurrentHashMap.newKeySet();
 +
@@ -1479,6 +1483,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +        }
 +        sessions.clear();
 +        windowTrackers.clear();
++        openingViewers.clear();
 +        nativeOutbound = null;
 +    }
 +
@@ -1491,6 +1496,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +        // whether this backend really finalized the session.
 +        final boolean closed = closeSession(session, false, CLOSE_ORIGIN_QUIT, true, true);
 +        windowTrackers.remove(player.getUniqueId());
++        openingViewers.remove(player.getUniqueId());
 +        return closed;
 +    }
 +
@@ -1595,8 +1601,38 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            renderSession(session, !reuseWindow, !reuseWindow);
 +        } finally {
 +            if (outermostOpen) {
-+                openingViewers.remove(player.getUniqueId());
++                releaseOpeningMarker(player, user);
 +            }
++        }
++    }
++
++    /**
++     * Lifts the open-in-progress marker, but not before the client connection has processed everything
++     * {@link #open} queued on it.
++     *
++     * <p>A close packet emitted during the open sequence is written from the viewer's thread and observed on
++     * the connection's event loop, because the server defers sends made off that loop. Clearing the marker
++     * inline would let the observation land after the marker is already gone, and the close would then be read
++     * as the viewer closing the window that was just opened - the failure {@code 39a19c8} fixed, back again as
++     * a race. Since the window-reuse path sends no open-screen packet afterwards, nothing would repair it.
++     *
++     * <p>Queueing the removal on the same event loop settles the order by construction rather than by timing:
++     * the loop is FIFO per channel, so every packet the open sequence queued is seen first.
++     */
++    private void releaseOpeningMarker(Player player, User user) {
++        final UUID viewerId = player.getUniqueId();
++        final Object channel = user.getChannel();
++        if (channel == null || !ChannelHelper.isOpen(channel)) {
++            openingViewers.remove(viewerId);
++            return;
++        }
++
++        try {
++            ChannelHelper.runInEventLoop(channel, () -> openingViewers.remove(viewerId));
++        } catch (final RuntimeException exception) {
++            // Never leave the marker behind: while it is set, outbound close packets for this viewer are
++            // dropped, so a stuck marker would make the viewer impossible to close out of anything.
++            openingViewers.remove(viewerId);
 +        }
 +    }
 +
@@ -1692,7 +1728,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            return;
 +        }
 +
-+        runOnPlayer(session.player(), () -> handlePacketClick(session, click, repairScope));
++        runOnPlayer(session, () -> handlePacketClick(session, click, repairScope));
 +    }
 +
 +    void handleWindowClose(User user, int windowId) {
@@ -1705,7 +1741,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            return;
 +        }
 +
-+        runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true, true));
++        runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true, true));
 +    }
 +
 +    /**
@@ -1734,7 +1770,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +
 +        final PacketGuiSession session = sessions.get(user.getUUID());
 +        if (session != null && !isGuiWindow(user, windowId)) {
-+            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true));
++            runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true));
 +        }
 +    }
 +
@@ -1766,7 +1802,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +                && (windowId == session.windowId() || windowId == PacketInventoryConstants.PLAYER_WINDOW_ID);
 +        if (closesThisSession) {
 +            session.closeRequested(true);
-+            runOnPlayer(session.player(), () -> {
++            runOnPlayer(session, () -> {
 +                final Player player = session.player();
 +                if (!closeSession(session, false, CLOSE_ORIGIN_SERVER, true, false)) {
 +                    return;
@@ -1805,6 +1841,10 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            closeSession(session, false, CLOSE_ORIGIN_QUIT, false, false);
 +        }
 +        windowTrackers.remove(viewerId);
++
++        // The open marker is normally lifted through the connection's event loop. A channel that dies while
++        // an open is in flight would leave it behind, and a stuck marker silently drops close packets.
++        openingViewers.remove(viewerId);
 +    }
 +
 +    /**
@@ -1883,7 +1923,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            playerSlots.add(slot);
 +        }
 +
-+        runOnPlayer(session.player(), () -> {
++        runOnPlayer(session, () -> {
 +            final PacketGuiNativeOutboundSender sender = nativeOutbound;
 +            if (sender == null || !isTracked(session) || session.closeRequested()) {
 +                return;
@@ -1918,7 +1958,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            return;
 +        }
 +
-+        runOnPlayer(session.player(), () -> {
++        runOnPlayer(session, () -> {
 +            final PacketGuiNativeOutboundSender sender = nativeOutbound;
 +            if (sender == null || !isTracked(session) || session.closeRequested()) {
 +                return;
@@ -2050,7 +2090,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            return;
 +        }
 +
-+        runOnPlayerNextTick(session.player(), () -> {
++        runOnPlayerNextTick(session, () -> {
 +            final PacketGuiRenderRequests.RenderRequest request = session.consumeRenderRequest();
 +            renderSession(session, request);
 +        });
@@ -2077,7 +2117,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            int[] playerSlotRepairs) {
 +        if (!isOnPlayerThread(session.player())) {
 +            runOnPlayer(
-+                    session.player(),
++                    session,
 +                    () -> renderSession(
 +                            session,
 +                            forceReopen,
@@ -2325,7 +2365,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +        }
 +
 +        if (!isOnPlayerThread(session.player())) {
-+            runOnPlayer(session.player(), () -> sendRenderPlan(session, plan));
++            runOnPlayer(session, () -> sendRenderPlan(session, plan));
 +            return;
 +        }
 +
@@ -2344,7 +2384,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +            }
 +        } catch (final RuntimeException exception) {
 +            owner.getLogger().log(Level.WARNING, "Failed to send native packet GUI render", exception);
-+            runOnPlayer(session.player(), () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
++            runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
 +        }
 +    }
 +
@@ -2369,7 +2409,7 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +
 +        if (!isOnPlayerThread(session.player()) && (sendClosePacket || callClose)) {
 +            runOnPlayer(
-+                    session.player(),
++                    session,
 +                    () -> closeSession(session, sendClosePacket, origin, callClose, syncInventory));
 +            return true;
 +        }
@@ -2439,13 +2479,32 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +     * <p>Runs inline when already on that thread: several call sites depend on the work having happened by the
 +     * time they return, most importantly {@code open()}, which publishes the session before rendering it.
 +     */
++    /**
++     * Runs on the viewer's thread, inline when already there.
++     *
++     * <p>If the scheduler refuses the task the session is discarded: it can never be rendered or closed
++     * properly again, and leaving it in the map would keep the viewer bound to a window nobody can update.
++     */
++    private void runOnPlayer(PacketGuiSession session, Runnable task) {
++        runOnPlayer(session.player(), task, () -> abandonSession(session));
++    }
++
++    /**
++     * Runs on the viewer's thread without a session to tie the task to. A refused task is only logged - there
++     * is nothing to discard, and guessing at whatever session the viewer happens to have would take down an
++     * unrelated one.
++     */
 +    private void runOnPlayer(Player player, Runnable task) {
++        runOnPlayer(player, task, () -> logRefusedTask(player));
++    }
++
++    private void runOnPlayer(Player player, Runnable task, Runnable refused) {
 +        if (isOnPlayerThread(player)) {
 +            task.run();
 +            return;
 +        }
 +
-+        scheduler.runAtEntityWithFallback(player, ignored -> task.run(), () -> abandonSession(player));
++        scheduler.runAtEntityWithFallback(player, ignored -> task.run(), refused);
 +    }
 +
 +    /**
@@ -2454,10 +2513,24 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +     * <p>A {@code null} task means the scheduler refused the work because the viewer is gone; the session is
 +     * then discarded so a latched render request cannot swallow every later one.
 +     */
++    private void runOnPlayerNextTick(PacketGuiSession session, Runnable task) {
++        runOnPlayerNextTick(session.player(), task, () -> abandonSession(session));
++    }
++
 +    private void runOnPlayerNextTick(Player player, Runnable task) {
-+        if (scheduler.runAtEntityLater(player, task, () -> abandonSession(player), 1L) == null) {
-+            abandonSession(player);
++        runOnPlayerNextTick(player, task, () -> logRefusedTask(player));
++    }
++
++    private void runOnPlayerNextTick(Player player, Runnable task, Runnable refused) {
++        if (scheduler.runAtEntityLater(player, task, refused, 1L) == null) {
++            refused.run();
 +        }
++    }
++
++    private void logRefusedTask(Player player) {
++        owner.getLogger()
++                .warning("Dropped a packet GUI task for " + player.getName()
++                        + ": the viewer's scheduler is no longer accepting tasks.");
 +    }
 +
 +    private boolean isOnPlayerThread(Player player) {
@@ -2468,12 +2541,21 @@ index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845
 +     * Drops a session whose viewer can no longer be scheduled on. No close packet and no close pipeline: the
 +     * client is already gone or has been moved, and running developer code here would be off-thread.
 +     */
-+    private void abandonSession(Player player) {
-+        final PacketGuiSession session = sessions.remove(player.getUniqueId());
-+        if (session == null) {
++    /**
++     * Discards a session whose viewer no longer accepts scheduled work.
++     *
++     * <p>The removal is conditional on purpose. A scheduler fallback fires asynchronously and can arrive long
++     * after the task was queued, by which time the viewer may already be on a different session - taking that
++     * one down would kill a live window and detach the viewer from a view it had just opened.
++     */
++    private void abandonSession(PacketGuiSession session) {
++        if (!sessions.remove(session.viewerId(), session)) {
++            // Already replaced or closed through the normal path, which did the full teardown.
++            session.clearScheduledRender();
 +            return;
 +        }
 +
++        final Player player = session.player();
 +        synchronized (session) {
 +            session.invalidatePendingSends();
 +            session.closeRequested(true);
