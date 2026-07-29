@@ -136,6 +136,11 @@ Startup log lines to look for:
   compiling and running, but they resolve against the player's *own* inventory view. Reading them is harmless;
   writing through them reaches real server-side state and must not be done from a packet GUI handler.
 
+  **`getCurrentItem()` returns a copy, not a mirror.** On the Bukkit backend it hands back a `CraftItemStack`
+  that wraps the real slot by reference, so `getCurrentItem().setAmount(2)` writes straight into it. There is no
+  such slot behind a packet GUI, so the same line changes nothing here. Write the item back with
+  `setCurrentItem(...)` — that is what the bottom-click write-back reads.
+
 ## Verification checklist
 
 Manual checklist from `AGENTS.md`, extended with the scenarios this backend added. Verified on the live

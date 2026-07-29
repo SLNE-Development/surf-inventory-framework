@@ -413,10 +413,10 @@ index d73ddb29859761e6505b001fb4d303f953cb99e3..686664b4211880e0dc7651cebda4e66c
  import org.jetbrains.annotations.UnmodifiableView;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..f7400c621a2afd63c280e2592057f04dfb6b408f
+index 0000000000000000000000000000000000000000..589e7959a09285b6eac44b6af28a88f9b61e361a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,128 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -434,6 +434,9 @@ index 0000000000000000000000000000000000000000..f7400c621a2afd63c280e2592057f04d
 +/**
 + * A synthetic {@link InventoryClickEvent} used by the packet GUI backend, where no real Bukkit click
 + * event exists.
++ *
++ * <p><b>{@code getCurrentItem()} returns a copy here</b>, not the live stack the Bukkit backend mirrors, so an
++ * in-place edit of it is silently discarded. Use {@code setCurrentItem(...)}.
 + *
 + * <p>It preserves binary compatibility for consumers that read
 + * {@link SlotClickContext#getClickOrigin()} as an {@link InventoryClickEvent} (e.g.
@@ -544,10 +547,10 @@ index 0000000000000000000000000000000000000000..f7400c621a2afd63c280e2592057f04d
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..2335ec52e1b6d2ce0b0bf2927789c9d0c5eec4e9
+index 0000000000000000000000000000000000000000..60a792e734ca62e792596424f4fa31ee66045b86
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,185 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -624,6 +627,14 @@ index 0000000000000000000000000000000000000000..2335ec52e1b6d2ce0b0bf2927789c9d0
 +        return player;
 +    }
 +
++    /**
++     * A copy of the clicked item, never a mirror of a real slot.
++     *
++     * <p>The Bukkit backend can hand back a {@code CraftItemStack} that writes straight through to the clicked
++     * slot; there is no such slot behind a packet GUI's top rows, and cloning the bottom ones keeps a handler
++     * from mutating captured state by accident. The consequence for consumers is that an in-place edit is
++     * discarded - {@link #setCurrentItem(ItemStack)} is the only way to change the item.
++     */
 +    @Override
 +    public @Nullable ItemStack getCurrentItem() {
 +        return currentItem == null ? null : currentItem.clone();
@@ -786,7 +797,7 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..992fbb75c57e056a275b5d48f0817a4e
      }
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
-index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..92eb5a88f4fbe962ed36ca2f80bf8daa26b8a58b 100644
+index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d58e95e70ea10ba7383aa6c18360f7edefe245e6 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 @@ -5,11 +5,8 @@ import me.devnatan.inventoryframework.ViewContainer;
@@ -813,7 +824,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..92eb5a88f4fbe962ed36ca2f80bf8daa
  
      @ApiStatus.Internal
      public SlotClickContext(
-@@ -32,30 +30,72 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -32,30 +30,78 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
              @Nullable Component clickedComponent,
              @NotNull InventoryClickEvent clickOrigin,
              boolean combined) {
@@ -871,6 +882,12 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..92eb5a88f4fbe962ed36ca2f80bf8daa
 +     * item into a real, droppable one, so a packet GUI handler must not do that. Use
 +     * {@link #getClickedContainer()} and {@code setCurrentItem} instead.
 +     * <p>
++     * One difference cannot be papered over: in packet mode {@code getCurrentItem()} returns a <b>copy</b>,
++     * where the Bukkit backend returns a live {@code CraftItemStack} that wraps the real slot by reference. So
++     * {@code getCurrentItem().setAmount(2)} - an in-place edit that works on the classic backend - changes
++     * nothing here. Always write the item back with {@code setCurrentItem(...)}; that is what the packet
++     * backend reads when it applies a bottom-inventory click.
++     * <p>
 +     * The return type is kept as {@link InventoryClickEvent} for binary compatibility with existing
 +     * consumers compiled against the classic backend.
       * <p>
@@ -890,7 +907,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..92eb5a88f4fbe962ed36ca2f80bf8daa
      }
  
      /**
-@@ -84,12 +124,13 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -84,12 +130,13 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      @Override
      public final void setCancelled(boolean cancelled) {
          this.cancelled = cancelled;
@@ -906,7 +923,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..92eb5a88f4fbe962ed36ca2f80bf8daa
      }
  
      @Override
-@@ -99,42 +140,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -99,42 +146,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
  
      @Override
      public final boolean isLeftClick() {
@@ -957,7 +974,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..92eb5a88f4fbe962ed36ca2f80bf8daa
      }
  
      @Override
-@@ -176,4 +217,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -176,4 +223,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      public final boolean isCombined() {
          return combined;
      }
@@ -1280,10 +1297,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d44194b4995e84041a053008f1fc95d553f949c8
+index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e48ae520a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1565 @@
+@@ -0,0 +1,1612 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1294,13 +1311,16 @@ index 0000000000000000000000000000000000000000..d44194b4995e84041a053008f1fc95d5
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCloseWindow;
 +import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerOpenWindow;
 +import com.tcoded.folialib.FoliaLib;
++import com.tcoded.folialib.enums.EntityTaskResult;
 +import com.tcoded.folialib.impl.PlatformScheduler;
 +import java.util.ArrayList;
 +import java.util.List;
 +import java.util.Set;
 +import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.concurrent.ConcurrentMap;
++import java.util.concurrent.atomic.AtomicBoolean;
 +import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.logging.Level;
 +import me.devnatan.inventoryframework.BukkitViewer;
@@ -2606,7 +2626,42 @@ index 0000000000000000000000000000000000000000..d44194b4995e84041a053008f1fc95d5
 +            return;
 +        }
 +
-+        scheduler.runAtEntityWithFallback(player, ignored -> task.run(), refused);
++        // The refusal has to be read off the returned future, not just left to the fallback runnable: on Folia
++        // a retired entity scheduler completes the future with ENTITY_RETIRED/SCHEDULER_RETIRED without
++        // invoking that runnable at all, so discarding the future dropped the task silently.
++        final Runnable refusedOnce = once(refused);
++        try {
++            final CompletableFuture<EntityTaskResult> scheduled =
++                    scheduler.runAtEntityWithFallback(player, ignored -> task.run(), refusedOnce);
++            if (scheduled == null) {
++                refusedOnce.run();
++                return;
++            }
++
++            scheduled.thenAccept(result -> {
++                if (result != EntityTaskResult.SUCCESS) {
++                    refusedOnce.run();
++                }
++            });
++        } catch (final RuntimeException exception) {
++            refusedOnce.run();
++        }
++    }
++
++    /**
++     * Wraps a refusal handler so it runs at most once.
++     *
++     * <p>Both refusal channels can fire for the same scheduling attempt - the fallback runnable and a
++     * non-SUCCESS future - and the platform decides which. Collapsing them here means neither path has to know
++     * about the other, and {@link #abandonSession} is not asked to be idempotent for a second reason.
++     */
++    private static Runnable once(Runnable action) {
++        final AtomicBoolean done = new AtomicBoolean();
++        return () -> {
++            if (done.compareAndSet(false, true)) {
++                action.run();
++            }
++        };
 +    }
 +
 +    /**
@@ -2624,8 +2679,17 @@ index 0000000000000000000000000000000000000000..d44194b4995e84041a053008f1fc95d5
 +    }
 +
 +    private void runOnPlayerNextTick(Player player, Runnable task, Runnable refused) {
-+        if (scheduler.runAtEntityLater(player, task, refused, 1L) == null) {
-+            refused.run();
++        final Runnable refusedOnce = once(refused);
++        try {
++            if (scheduler.runAtEntityLater(player, task, refusedOnce, 1L) == null) {
++                refusedOnce.run();
++            }
++        } catch (final RuntimeException exception) {
++            // A null return is not the only way a refusal surfaces: FoliaLib's Folia implementation wraps
++            // whatever the entity scheduler handed back, so a retired scheduler makes it throw while wrapping
++            // null instead of returning null. Without this the exception escaped onto a netty thread and the
++            // session kept a latched render request that swallowed every later one.
++            refusedOnce.run();
 +        }
 +    }
 +
