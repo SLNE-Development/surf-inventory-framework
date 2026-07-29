@@ -1274,7 +1274,7 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..a44e3f3cf88652fa1d12f91ea33d38a197473c78
+index 0000000000000000000000000000000000000000..a633305b82d9027fd1a3bfc7206441e78bc13236
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 @@ -0,0 +1,1314 @@
@@ -2027,7 +2027,7 @@ index 0000000000000000000000000000000000000000..a44e3f3cf88652fa1d12f91ea33d38a1
 +        }
 +
 +        runOnPlayerNextTick(session.player(), () -> {
-+            final PacketGuiSession.RenderRequest request = session.consumeRenderRequest();
++            final PacketGuiRenderRequests.RenderRequest request = session.consumeRenderRequest();
 +            renderSession(session, request);
 +        });
 +    }
@@ -2036,7 +2036,7 @@ index 0000000000000000000000000000000000000000..a44e3f3cf88652fa1d12f91ea33d38a1
 +        renderSession(session, forceReopen, hardResync, new boolean[0], new int[0]);
 +    }
 +
-+    private void renderSession(PacketGuiSession session, PacketGuiSession.RenderRequest request) {
++    private void renderSession(PacketGuiSession session, PacketGuiRenderRequests.RenderRequest request) {
 +        renderSession(
 +                session,
 +                request.forceReopen(),
@@ -3578,6 +3578,193 @@ index 0000000000000000000000000000000000000000..b08e2dc2684aa5ca04844b5f496a0a4e
 +        return Component.text(String.valueOf(title));
 +    }
 +}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequests.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequests.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8a180b34efab4abc2e0c7dea01484c3f718a8ba
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequests.java
+@@ -0,0 +1,181 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.util.Arrays;
++
++/**
++ * Coalesces the render requests of one packet GUI session.
++ *
++ * <p>A single click can dirty several slots and a view can rewrite its whole model in one pass, so requests
++ * are merged into one pending frame instead of producing a render each. The latch is what makes that work:
++ * the first request after a consume schedules the render task, every request until that task runs only adds
++ * to the frame it will see.
++ *
++ * <p>Merging is deliberately one-way. Two requests never cancel each other out - a full resync wins over
++ * targeted repairs, a reopen wins over a resync - because the cost of resending too much is a packet, and the
++ * cost of resending too little is a window that no longer matches what the view thinks it shows.
++ *
++ * <p>Requests arrive from netty threads and are consumed on the viewer's thread, so every method is
++ * synchronized.
++ */
++final class PacketGuiRenderRequests {
++
++    private final int topSize;
++    private boolean scheduled;
++    private boolean forceReopen;
++    private boolean hardResync;
++    private boolean[] topSlotRepairs = new boolean[0];
++    private final boolean[] playerSlotRepairs = new boolean[PacketInventoryConstants.INVENTORY_SIZE];
++    private int playerSlotRepairCount;
++
++    PacketGuiRenderRequests(int topSize) {
++        this.topSize = topSize;
++    }
++
++    /**
++     * Merges a request into the pending frame.
++     *
++     * @return {@code true} when the caller has to schedule the render task, i.e. when no frame was pending.
++     */
++    synchronized boolean schedule(
++            boolean forceReopen, boolean hardResync, PacketGuiRepairScope repairScope, PacketGuiClick click) {
++        final PacketGuiRepairScope scope = repairScope == null ? PacketGuiRepairScope.NONE : repairScope;
++        this.forceReopen |= forceReopen;
++        this.hardResync |= hardResync || scope.fullWindow();
++
++        // Targeted repairs are pointless once the frame resends everything anyway.
++        if (!this.hardResync && click != null) {
++            scheduleTargetedRepairs(scope, click);
++        }
++
++        if (scheduled) {
++            return false;
++        }
++
++        scheduled = true;
++        return true;
++    }
++
++    /**
++     * Takes the pending frame and releases the latch, so requests arriving while the render runs schedule a
++     * new task rather than being folded into a frame nobody will read.
++     */
++    synchronized RenderRequest consume() {
++        final RenderRequest request = new RenderRequest(
++                forceReopen, hardResync, topSlotRepairs.length == 0 ? new boolean[0] : topSlotRepairs.clone(), playerSlotRepairs());
++        scheduled = false;
++        forceReopen = false;
++        hardResync = false;
++        topSlotRepairs = new boolean[0];
++        Arrays.fill(playerSlotRepairs, false);
++        playerSlotRepairCount = 0;
++        return request;
++    }
++
++    /**
++     * Releases the latch without producing a request. Used when the task that was supposed to consume the
++     * frame can never run, so a later {@link #schedule} is not swallowed.
++     */
++    synchronized void clear() {
++        scheduled = false;
++    }
++
++    private void scheduleTargetedRepairs(PacketGuiRepairScope scope, PacketGuiClick click) {
++        if (scope.repairsClickedPlayerSlot()) {
++            schedulePlayerSlotRepair(PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(topSize, click.slot()));
++            scheduleChangedPlayerSlotRepairs(click);
++            return;
++        }
++
++        if (scope.repairsTopSlot()) {
++            scheduleTopSlotRepair(click.slot());
++        }
++
++        if (scope.repairsChangedPlayerSlots()) {
++            scheduleChangedPlayerSlotRepairs(click);
++        }
++
++        if (scope.repairsOffhand()) {
++            schedulePlayerSlotRepair(PacketInventoryConstants.SLOT_OFFHAND);
++        }
++    }
++
++    private void scheduleTopSlotRepair(int slot) {
++        if (slot < 0 || slot >= topSize) {
++            return;
++        }
++
++        if (topSlotRepairs.length != topSize) {
++            topSlotRepairs = new boolean[topSize];
++        }
++        topSlotRepairs[slot] = true;
++    }
++
++    private void scheduleChangedPlayerSlotRepairs(PacketGuiClick click) {
++        for (final int changedSlot : click.changedSlots()) {
++            schedulePlayerSlotRepair(PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(topSize, changedSlot));
++        }
++
++        schedulePlayerSlotRepair(click.swappedPlayerWindowSlot());
++    }
++
++    private void schedulePlayerSlotRepair(int playerSlot) {
++        if (playerSlot < 0 || playerSlot >= PacketInventoryConstants.INVENTORY_SIZE) {
++            return;
++        }
++
++        if (!playerSlotRepairs[playerSlot]) {
++            playerSlotRepairs[playerSlot] = true;
++            playerSlotRepairCount++;
++        }
++    }
++
++    private int[] playerSlotRepairs() {
++        if (playerSlotRepairCount == 0) {
++            return new int[0];
++        }
++
++        final int[] repairs = new int[playerSlotRepairCount];
++        int index = 0;
++        for (int slot = 0; slot < playerSlotRepairs.length; slot++) {
++            if (playerSlotRepairs[slot]) {
++                repairs[index++] = slot;
++            }
++        }
++        return repairs;
++    }
++
++    /**
++     * One coalesced frame: what to resend and how much of it.
++     */
++    static final class RenderRequest {
++
++        private final boolean forceReopen;
++        private final boolean hardResync;
++        private final boolean[] forcedTopSlotRepairs;
++        private final int[] playerSlotRepairs;
++
++        private RenderRequest(
++                boolean forceReopen, boolean hardResync, boolean[] forcedTopSlotRepairs, int[] playerSlotRepairs) {
++            this.forceReopen = forceReopen;
++            this.hardResync = hardResync;
++            this.forcedTopSlotRepairs = forcedTopSlotRepairs;
++            this.playerSlotRepairs = playerSlotRepairs;
++        }
++
++        boolean forceReopen() {
++            return forceReopen;
++        }
++
++        boolean hardResync() {
++            return hardResync;
++        }
++
++        boolean[] forcedTopSlotRepairs() {
++            return forcedTopSlotRepairs;
++        }
++
++        int[] playerSlotRepairs() {
++            return playerSlotRepairs;
++        }
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRepairScope.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRepairScope.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..862304c2a30d0bae12cb4165678016441db8c7e6
@@ -3625,14 +3812,13 @@ index 0000000000000000000000000000000000000000..862304c2a30d0bae12cb416567801644
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..87f177266bd5be45723fe11ff9a2c6d7b2d618d7
+index 0000000000000000000000000000000000000000..b3e40b1dfd7e088a7bf11be24e8c3ffef965b231
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,143 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
-+import java.util.Arrays;
 +import java.util.UUID;
 +import me.devnatan.inventoryframework.BukkitViewer;
 +import me.devnatan.inventoryframework.context.IFRenderContext;
@@ -3656,13 +3842,8 @@ index 0000000000000000000000000000000000000000..87f177266bd5be45723fe11ff9a2c6d7
 +    private final int windowId;
 +    private final PacketViewContainer container;
 +    private final PacketViewerWindowTracker windowTracker;
++    private final PacketGuiRenderRequests renderRequests;
 +    private PacketGuiRender appliedRender;
-+    private boolean renderScheduled;
-+    private boolean scheduledForceReopen;
-+    private boolean scheduledHardResync;
-+    private boolean[] scheduledTopSlotRepairs = new boolean[0];
-+    private final boolean[] scheduledPlayerSlotRepairs = new boolean[PacketInventoryConstants.INVENTORY_SIZE];
-+    private int scheduledPlayerSlotRepairCount;
 +    private boolean closed;
 +    private boolean closeRequested;
 +    private int stateId = 1;
@@ -3682,6 +3863,7 @@ index 0000000000000000000000000000000000000000..87f177266bd5be45723fe11ff9a2c6d7
 +        this.windowId = windowId;
 +        this.container = container;
 +        this.windowTracker = windowTracker;
++        this.renderRequests = new PacketGuiRenderRequests(container.getSize());
 +    }
 +
 +    // The identity of a session never changes, so these accessors take no lock. That matters because they
@@ -3760,151 +3942,21 @@ index 0000000000000000000000000000000000000000..87f177266bd5be45723fe11ff9a2c6d7
 +        return generation == sendGeneration && generation > invalidatedSendGeneration;
 +    }
 +
-+    synchronized boolean scheduleRender(
-+            boolean forceReopen,
-+            boolean hardResync,
-+            PacketGuiRepairScope repairScope,
-+            PacketGuiClick click) {
-+        final PacketGuiRepairScope scope = repairScope == null ? PacketGuiRepairScope.NONE : repairScope;
-+        scheduledForceReopen |= forceReopen;
-+        scheduledHardResync |= hardResync || scope.fullWindow();
-+
-+        if (!scheduledHardResync && click != null) {
-+            scheduleTargetedRepairs(scope, click);
-+        }
-+
-+        if (renderScheduled) {
-+            return false;
-+        }
-+
-+        renderScheduled = true;
-+        return true;
++    boolean scheduleRender(
++            boolean forceReopen, boolean hardResync, PacketGuiRepairScope repairScope, PacketGuiClick click) {
++        return renderRequests.schedule(forceReopen, hardResync, repairScope, click);
 +    }
 +
-+    synchronized RenderRequest consumeRenderRequest() {
-+        final RenderRequest request = new RenderRequest(
-+                scheduledForceReopen,
-+                scheduledHardResync,
-+                scheduledTopSlotRepairs.length == 0 ? new boolean[0] : scheduledTopSlotRepairs.clone(),
-+                scheduledPlayerSlotRepairs());
-+        renderScheduled = false;
-+        scheduledForceReopen = false;
-+        scheduledHardResync = false;
-+        scheduledTopSlotRepairs = new boolean[0];
-+        Arrays.fill(scheduledPlayerSlotRepairs, false);
-+        scheduledPlayerSlotRepairCount = 0;
-+        return request;
++    PacketGuiRenderRequests.RenderRequest consumeRenderRequest() {
++        return renderRequests.consume();
 +    }
 +
 +    /**
 +     * Releases the scheduled-render latch without producing a request. Used when the task that was supposed to
 +     * consume the request can never run, so a later {@link #scheduleRender} is not swallowed.
 +     */
-+    synchronized void clearScheduledRender() {
-+        renderScheduled = false;
-+    }
-+
-+    private void scheduleTargetedRepairs(PacketGuiRepairScope scope, PacketGuiClick click) {
-+        if (scope.repairsClickedPlayerSlot()) {
-+            schedulePlayerSlotRepair(
-+                    PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(container.getSize(), click.slot()));
-+            scheduleChangedPlayerSlotRepairs(click);
-+            return;
-+        }
-+
-+        if (scope.repairsTopSlot()) {
-+            scheduleTopSlotRepair(click.slot());
-+        }
-+
-+        if (scope.repairsChangedPlayerSlots()) {
-+            scheduleChangedPlayerSlotRepairs(click);
-+        }
-+
-+        if (scope.repairsOffhand()) {
-+            schedulePlayerSlotRepair(PacketInventoryConstants.SLOT_OFFHAND);
-+        }
-+    }
-+
-+    private void scheduleTopSlotRepair(int slot) {
-+        if (slot < 0 || slot >= container.getSize()) {
-+            return;
-+        }
-+
-+        if (scheduledTopSlotRepairs.length != container.getSize()) {
-+            scheduledTopSlotRepairs = new boolean[container.getSize()];
-+        }
-+        scheduledTopSlotRepairs[slot] = true;
-+    }
-+
-+    private void scheduleChangedPlayerSlotRepairs(PacketGuiClick click) {
-+        final int topSize = container.getSize();
-+        for (final int changedSlot : click.changedSlots()) {
-+            final int playerSlot = PacketInventoryConstants.guiContainerSlotToPlayerWindowSlot(topSize, changedSlot);
-+            schedulePlayerSlotRepair(playerSlot);
-+        }
-+
-+        schedulePlayerSlotRepair(click.swappedPlayerWindowSlot());
-+    }
-+
-+    private void schedulePlayerSlotRepair(int playerSlot) {
-+        if (playerSlot < 0 || playerSlot >= PacketInventoryConstants.INVENTORY_SIZE) {
-+            return;
-+        }
-+
-+        if (!scheduledPlayerSlotRepairs[playerSlot]) {
-+            scheduledPlayerSlotRepairs[playerSlot] = true;
-+            scheduledPlayerSlotRepairCount++;
-+        }
-+    }
-+
-+    private int[] scheduledPlayerSlotRepairs() {
-+        if (scheduledPlayerSlotRepairCount == 0) {
-+            return new int[0];
-+        }
-+
-+        final int[] repairs = new int[scheduledPlayerSlotRepairCount];
-+        int index = 0;
-+        for (int slot = 0; slot < scheduledPlayerSlotRepairs.length; slot++) {
-+            if (scheduledPlayerSlotRepairs[slot]) {
-+                repairs[index++] = slot;
-+            }
-+        }
-+        return repairs;
-+    }
-+
-+    static final class RenderRequest {
-+
-+        private final boolean forceReopen;
-+        private final boolean hardResync;
-+        private final boolean[] forcedTopSlotRepairs;
-+        private final int[] playerSlotRepairs;
-+
-+        private RenderRequest(
-+                boolean forceReopen,
-+                boolean hardResync,
-+                boolean[] forcedTopSlotRepairs,
-+                int[] playerSlotRepairs) {
-+            this.forceReopen = forceReopen;
-+            this.hardResync = hardResync;
-+            this.forcedTopSlotRepairs = forcedTopSlotRepairs;
-+            this.playerSlotRepairs = playerSlotRepairs;
-+        }
-+
-+        boolean forceReopen() {
-+            return forceReopen;
-+        }
-+
-+        boolean hardResync() {
-+            return hardResync;
-+        }
-+
-+        boolean[] forcedTopSlotRepairs() {
-+            return forcedTopSlotRepairs;
-+        }
-+
-+        int[] playerSlotRepairs() {
-+            return playerSlotRepairs;
-+        }
++    void clearScheduledRender() {
++        renderRequests.clear();
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java
@@ -4836,6 +4888,205 @@ index 0000000000000000000000000000000000000000..248745ce12a28003a4a137f68eb397a3
 +                        "identifier '" + identifier + "' is not a Bukkit ClickType (" + type + "/" + button + ")");
 +            }
 +        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..643b57b48087df6f350b5f22f58176f6b358d0aa
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java
+@@ -0,0 +1,193 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow.WindowClickType;
++import org.junit.jupiter.api.Test;
++
++class PacketGuiRenderRequestsTest {
++
++    private static final int TOP_SIZE = 27;
++
++    /** GUI slot 27 is the first slot of the player's main inventory, i.e. player window slot 9. */
++    private static final int FIRST_BOTTOM_GUI_SLOT = TOP_SIZE;
++
++    @Test
++    void latchesSoOnlyTheFirstRequestSchedulesATask() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        assertTrue(requests.schedule(false, false, PacketGuiRepairScope.NONE, null));
++        assertFalse(requests.schedule(false, false, PacketGuiRepairScope.NONE, null));
++        assertFalse(requests.schedule(false, false, PacketGuiRepairScope.NONE, null));
++    }
++
++    @Test
++    void latchReopensAfterTheFrameIsConsumed() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        assertTrue(requests.schedule(false, false, PacketGuiRepairScope.NONE, null));
++        requests.consume();
++        assertTrue(requests.schedule(false, false, PacketGuiRepairScope.NONE, null));
++    }
++
++    /**
++     * The whole point of {@code clear()}: a render task that can never run must not leave the latch closed,
++     * or every later request is swallowed and the window silently stops updating.
++     */
++    @Test
++    void clearReleasesTheLatchWithoutProducingAFrame() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        assertTrue(requests.schedule(true, true, PacketGuiRepairScope.FULL_WINDOW, null));
++        requests.clear();
++
++        assertTrue(requests.schedule(false, false, PacketGuiRepairScope.NONE, null));
++
++        // The frame itself survives the clear - only the latch is released.
++        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
++        assertTrue(request.forceReopen());
++        assertTrue(request.hardResync());
++    }
++
++    @Test
++    void mergesFlagsOneWayAcrossRequests() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(false, false, PacketGuiRepairScope.NONE, null);
++        requests.schedule(true, false, PacketGuiRepairScope.NONE, null);
++        requests.schedule(false, true, PacketGuiRepairScope.NONE, null);
++        requests.schedule(false, false, PacketGuiRepairScope.NONE, null);
++
++        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
++        assertTrue(request.forceReopen(), "a reopen may never be downgraded by a later plain request");
++        assertTrue(request.hardResync(), "a resync may never be downgraded by a later plain request");
++    }
++
++    @Test
++    void aFullWindowScopeImpliesAHardResync() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(false, false, PacketGuiRepairScope.FULL_WINDOW, click(0, WindowClickType.PICKUP));
++
++        assertTrue(requests.consume().hardResync());
++    }
++
++    @Test
++    void consumingResetsTheFrame() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(true, true, PacketGuiRepairScope.FULL_WINDOW, null);
++        requests.consume();
++
++        requests.schedule(false, false, PacketGuiRepairScope.NONE, null);
++        final PacketGuiRenderRequests.RenderRequest second = requests.consume();
++        assertFalse(second.forceReopen());
++        assertFalse(second.hardResync());
++        assertEquals(0, second.forcedTopSlotRepairs().length);
++        assertEquals(0, second.playerSlotRepairs().length);
++    }
++
++    @Test
++    void recordsTheClickedTopSlotForATargetedRepair() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(false, false, PacketGuiRepairScope.TOP_SLOT_AND_CURSOR, click(4, WindowClickType.PICKUP));
++
++        final boolean[] repairs = requests.consume().forcedTopSlotRepairs();
++        assertEquals(TOP_SIZE, repairs.length);
++        assertTrue(repairs[4]);
++        assertFalse(repairs[3]);
++        assertFalse(repairs[5]);
++    }
++
++    @Test
++    void mapsAClickedBottomSlotToItsPlayerWindowSlot() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(
++                false,
++                false,
++                PacketGuiRepairScope.PLAYER_INVENTORY,
++                click(FIRST_BOTTOM_GUI_SLOT, WindowClickType.PICKUP));
++
++        assertArrayEquals(
++                new int[] {PacketInventoryConstants.ITEMS_START}, requests.consume().playerSlotRepairs());
++    }
++
++    @Test
++    void recordsTheOffhandForAnOffhandSwap() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(
++                false,
++                false,
++                PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_OFFHAND,
++                PacketGuiClick.of(1, 2, 40, WindowClickType.SWAP));
++
++        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
++        assertTrue(request.forcedTopSlotRepairs()[2]);
++        assertArrayEquals(new int[] {PacketInventoryConstants.SLOT_OFFHAND}, request.playerSlotRepairs());
++    }
++
++    @Test
++    void collectsPlayerSlotRepairsFromSeveralClicksWithoutDuplicates() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(
++                false,
++                false,
++                PacketGuiRepairScope.PLAYER_INVENTORY,
++                click(FIRST_BOTTOM_GUI_SLOT, WindowClickType.PICKUP));
++        requests.schedule(
++                false,
++                false,
++                PacketGuiRepairScope.PLAYER_INVENTORY,
++                click(FIRST_BOTTOM_GUI_SLOT + 1, WindowClickType.PICKUP));
++        requests.schedule(
++                false,
++                false,
++                PacketGuiRepairScope.PLAYER_INVENTORY,
++                click(FIRST_BOTTOM_GUI_SLOT, WindowClickType.PICKUP));
++
++        assertArrayEquals(
++                new int[] {PacketInventoryConstants.ITEMS_START, PacketInventoryConstants.ITEMS_START + 1},
++                requests.consume().playerSlotRepairs());
++    }
++
++    /**
++     * Once the frame resends the whole window, tracking individual slots would only cost work - and would
++     * leave stale entries behind if a later request downgraded the scope.
++     */
++    @Test
++    void dropsTargetedRepairsOnceTheFrameResyncsEverything() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(false, true, PacketGuiRepairScope.NONE, null);
++        requests.schedule(false, false, PacketGuiRepairScope.TOP_SLOT_AND_CURSOR, click(4, WindowClickType.PICKUP));
++
++        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
++        assertTrue(request.hardResync());
++        assertEquals(0, request.forcedTopSlotRepairs().length);
++        assertEquals(0, request.playerSlotRepairs().length);
++    }
++
++    @Test
++    void ignoresSlotsOutsideTheWindow() {
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++
++        requests.schedule(false, false, PacketGuiRepairScope.TOP_SLOT_AND_CURSOR, click(-999, WindowClickType.THROW));
++        requests.schedule(
++                false, false, PacketGuiRepairScope.TOP_SLOT_AND_CURSOR, click(TOP_SIZE + 99, WindowClickType.PICKUP));
++
++        final PacketGuiRenderRequests.RenderRequest request = requests.consume();
++        assertEquals(0, request.forcedTopSlotRepairs().length);
++        assertEquals(0, request.playerSlotRepairs().length);
++    }
++
++    private static PacketGuiClick click(int slot, WindowClickType clickType) {
++        return PacketGuiClick.of(1, slot, 0, clickType);
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java
