@@ -142,7 +142,7 @@ index 16e4791981a4fd159659190b2ac3e1a961e28e90..78c704d7457a6fe653346e5d10037292
  
      @Override
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
-index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..182a0b071c6c563c52e2a75bb7b382c384efdf16 100644
+index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..474868399feaa05336b8716d371846d8b62f8d18 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 @@ -5,6 +5,8 @@ import me.devnatan.inventoryframework.context.IFCloseContext;
@@ -191,11 +191,17 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..182a0b071c6c563c52e2a75bb7b382c3
          final Viewer viewer = viewFrame.getViewer(player);
          if (viewer == null) return;
  
-@@ -49,6 +62,23 @@ final class IFInventoryListener implements Listener {
+@@ -49,6 +62,29 @@ final class IFInventoryListener implements Listener {
          root.getPipeline().execute(StandardPipelinePhases.CLOSE, closeContext);
      }
  
-+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
++    /**
++     * MONITOR, not LOWEST: the packet session may only be torn down once it is settled that the real inventory
++     * is actually going to open. CraftBukkit fires this event before it checks cancellation and rolls the
++     * container back if a listener cancelled it, so at LOWEST a later cancel left the viewer with neither the
++     * GUI - already closed here - nor the container.
++     */
++    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
 +    public void onInventoryOpen(final InventoryOpenEvent event) {
 +        if (!(event.getPlayer() instanceof Player)) return;
 +
@@ -1274,10 +1280,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be85770404
+index 0000000000000000000000000000000000000000..8aca42c5731265b62b92a081de6d157d3e32d123
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1525 @@
+@@ -0,0 +1,1561 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1635,8 +1641,19 @@ index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be
 +     * as the viewer closing the window that was just opened - the failure {@code 39a19c8} fixed, back again as
 +     * a race. Since the window-reuse path sends no open-screen packet afterwards, nothing would repair it.
 +     *
-+     * <p>Queueing the removal on the same event loop settles the order by construction rather than by timing:
-+     * the loop is FIFO per channel, so every packet the open sequence queued is seen first.
++     * <p>Queueing the removal on the same event loop settles that order for the ordinary case: sending a packet
++     * off the loop ends in {@code eventLoop().execute(...)} during {@code open()}, and the loop is FIFO per
++     * channel, so the write - and with it the outbound hook that observes the close - runs before this removal.
++     *
++     * <p><b>Known limitation.</b> That is not an absolute guarantee on this server. Paper's queued networking
++     * has {@code Connection#send} append to {@code pendingActions} and then flush, and the flush gives up when
++     * another thread already holds the flush lock ({@code processQueue} returns early instead of draining). In
++     * that case the packet is written by whoever flushes next, which can be after this removal has run, and the
++     * close is then mistaken for the viewer closing the window that was just opened. The holder re-checks the
++     * queue after releasing the lock, so the gap is small, but it is not zero. Widening the marker's lifetime
++     * to cover it is not obviously an improvement - while the marker is set, genuine close packets are dropped
++     * too, so a longer window trades one rare failure for another. Ordering the removal through the same
++     * {@code pendingActions} queue the packet went into would fix it properly.
 +     */
 +    private void releaseOpeningMarker(Player player, User user) {
 +        final UUID viewerId = player.getUniqueId();
@@ -1760,6 +1777,12 @@ index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be
 +            return;
 +        }
 +
++        // Marked before the hop to the viewer's thread, which costs a tick. The client has already torn its
++        // screen down and the packet is cancelled, so the server never learns any other way - without this a
++        // reopen inside that tick would find the session still eligible for window reuse, adopt the id and the
++        // applied render of a screen that no longer exists, and send no open packet because nothing about the
++        // window appears to have changed. The viewer would be left bound to an invisible session.
++        session.closeRequested(true);
 +        runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true, true));
 +    }
 +
@@ -1789,6 +1812,9 @@ index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be
 +
 +        final PacketGuiSession session = sessions.get(user.getUUID());
 +        if (session != null && !isGuiWindow(user, windowId)) {
++            // Same reasoning as handleWindowClose: a real container is taking the screen, so this session must
++            // stop being a reuse candidate immediately rather than a tick from now.
++            session.closeRequested(true);
 +            runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true));
 +        }
 +    }
@@ -2170,6 +2196,17 @@ index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be
 +                addCursor(plan, cloneItem(session.player().getItemOnCursor()));
 +            }
 +
++            // The diff baseline advances before the plan is sent, which is only safe because a plan can never
++            // be superseded while its session is still live: nextSendGeneration() above is the sole generation
++            // bump, it happens here, and this method runs exclusively on the viewer's thread (see the guard at
++            // the top), so two renders for one viewer are strictly serialized. Every remaining way canSend()
++            // can fail mid-plan - untracked, close requested, native sender gone, channel closed - belongs to a
++            // session that is already dead, so nothing will diff against the advanced baseline again.
++            //
++            // Do NOT make sending asynchronous without moving this line after the last packet is written. It
++            // was async once (38a6e96), and under that model a superseded plan left the baseline claiming slots
++            // had been delivered that never were - they would then be diffed as unchanged and never resent
++            // until the next full resync.
 +            session.appliedRender(render);
 +            sendRenderPlan(session, plan);
 +        } catch (final RuntimeException exception) {
@@ -2431,6 +2468,11 @@ index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be
 +        }
 +        available = false;
 +
++        // Dropped before the teardown so closeSession takes its PacketEvents branch for the cursor and close
++        // packets. The native path is by definition broken at this point; reaching for it again would throw
++        // and leave every viewer staring at a window the server has already forgotten.
++        nativeOutbound = null;
++
 +        owner.getLogger()
 +                .log(
 +                        Level.WARNING,
@@ -2440,7 +2482,7 @@ index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be
 +
 +        for (final PacketGuiSession open : List.copyOf(sessions.values())) {
 +            try {
-+                runOnPlayer(open, () -> closeSession(open, false, CLOSE_ORIGIN_SERVER, true, true));
++                runOnPlayer(open, () -> closeSession(open, true, CLOSE_ORIGIN_SERVER, true, true));
 +            } catch (final RuntimeException ignored) {
 +                // Best effort: one viewer failing to close must not stop the others from being released.
 +            }
@@ -2805,10 +2847,10 @@ index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..0da7f70a1658150890b2500d7251bef4177ef278
+index 0000000000000000000000000000000000000000..28681143031d27744d5cad88b6845bde7112db44
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,248 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
@@ -2949,12 +2991,16 @@ index 0000000000000000000000000000000000000000..0da7f70a1658150890b2500d7251bef4
 +        return PacketGuiRepairScope.FULL_WINDOW;
 +    }
 +
++    // Outside clicks are included so these cannot disagree with clickIdentifier(), which reports an outside
++    // click as LEFT/RIGHT. Without it the THROW wire form - the only one a packet GUI ever actually receives,
++    // because it never puts anything on the real cursor - produced a click that called itself LEFT while
++    // isLeftClick() said false.
 +    boolean isLeftClick() {
-+        return (isPickupClick() || isQuickMoveClick()) && button == 0;
++        return (isOutsideClick() || isPickupClick() || isQuickMoveClick()) && button == 0;
 +    }
 +
 +    boolean isRightClick() {
-+        return (isPickupClick() || isQuickMoveClick()) && button == 1;
++        return (isOutsideClick() || isPickupClick() || isQuickMoveClick()) && button == 1;
 +    }
 +
 +    boolean isMiddleClick() {
@@ -3055,14 +3101,15 @@ index 0000000000000000000000000000000000000000..0da7f70a1658150890b2500d7251bef4
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..e4bea5df501492e2bdb4e4e7f9235afa21a3627d
+index 0000000000000000000000000000000000000000..5a1d1a464f28c1199e54f0609735cb7f218953fb
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,564 @@
+@@ -0,0 +1,572 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
 +import java.lang.reflect.Field;
++import java.lang.reflect.InvocationTargetException;
 +import java.lang.reflect.Method;
 +import java.util.ArrayList;
 +import java.util.List;
@@ -3330,6 +3377,13 @@ index 0000000000000000000000000000000000000000..e4bea5df501492e2bdb4e4e7f9235afa
 +        final Method send = sendMethod(connection.getClass());
 +        try {
 +            send.invoke(connection, packet);
++        } catch (final InvocationTargetException exception) {
++            // The method was found, was accessible and ran - the server's own send() threw. That says nothing
++            // about the send path being usable, so it must NOT become a SendPathUnusableException: that
++            // exception is the single signal that turns packet mode off for the whole server, and laundering
++            // a per-packet failure into it would kill the feature for everyone over one bad packet.
++            throw new IllegalStateException(
++                    "The server rejected a native packet GUI item packet", exception.getCause());
 +        } catch (final ReflectiveOperationException exception) {
 +            throw new SendPathUnusableException("Failed to send native packet GUI item packet", exception);
 +        }
@@ -5061,10 +5115,10 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..248745ce12a28003a4a137f68eb397a303ea3578
+index 0000000000000000000000000000000000000000..63740935ffd8eb538298a895696c8fcdef0c2489
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,161 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -5148,6 +5202,33 @@ index 0000000000000000000000000000000000000000..248745ce12a28003a4a137f68eb397a3
 +        // The drop key keeps its own identifier.
 +        assertEquals("DROP", PacketGuiClick.of(1, 13, 0, WindowClickType.THROW).clickIdentifier());
 +        assertEquals("CONTROL_DROP", PacketGuiClick.of(1, 13, 1, WindowClickType.THROW).clickIdentifier());
++    }
++
++    /**
++     * The boolean accessors and the click identifier describe the same click, so they may never disagree about
++     * it. THROW is the form a packet GUI actually receives for an outside click - it never puts anything on the
++     * real cursor - and it used to report LEFT while {@code isLeftClick()} was false.
++     */
++    @Test
++    void outsideClickButtonAccessorsAgreeWithTheClickIdentifier() {
++        for (final WindowClickType type : new WindowClickType[] {WindowClickType.THROW, WindowClickType.PICKUP}) {
++            final PacketGuiClick left = PacketGuiClick.of(1, OUTSIDE, 0, type);
++            assertTrue(left.isLeftClick(), "isLeftClick for outside " + type);
++            assertFalse(left.isRightClick(), "isRightClick for outside " + type);
++            assertEquals("LEFT", left.clickIdentifier());
++
++            final PacketGuiClick right = PacketGuiClick.of(1, OUTSIDE, 1, type);
++            assertTrue(right.isRightClick(), "isRightClick for outside " + type);
++            assertFalse(right.isLeftClick(), "isLeftClick for outside " + type);
++            assertEquals("RIGHT", right.clickIdentifier());
++        }
++    }
++
++    /** The drop key must not be dragged into the outside-click widening. */
++    @Test
++    void theDropKeyIsStillNeitherLeftNorRightClick() {
++        assertFalse(PacketGuiClick.of(1, 13, 0, WindowClickType.THROW).isLeftClick());
++        assertFalse(PacketGuiClick.of(1, 13, 1, WindowClickType.THROW).isRightClick());
 +    }
 +
 +    @Test

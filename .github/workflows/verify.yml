@@ -43,8 +43,10 @@ jobs:
       - name: Check that the patches are up to date
         run: |
           ./gradlew makePatches --stacktrace
-          if ! git diff --quiet -- patches; then
+          # Compared against HEAD, not the index: makePatches stages the patches it regenerates, so a plain
+          # `git diff -- patches` compares them against themselves and can never fail.
+          if ! git diff --quiet HEAD -- patches; then
             echo "::error::patches/ is out of sync with the target repository. Run './gradlew makePatches' and commit the result."
-            git diff --stat -- patches
+            git diff --stat HEAD -- patches
             exit 1
           fi

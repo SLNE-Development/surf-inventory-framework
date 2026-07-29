@@ -76,10 +76,20 @@ Verifikations-Checkliste stehen in `docs/packet-gui-backend.md`.
 
 ## Iterieren
 
-Nach jeder Codeänderung im Fork:
+Nach jeder Codeänderung im Fork. **Zuerst `makePatches`** — `publishToMavenLocal` hängt an `applyPatches`,
+und das setzt das generierte Repository hart auf die *committeten* Patches zurück. Eine Änderung, die nur im
+generierten Repo committet und noch nicht in einen Patch geschrieben wurde, geht dabei verloren, und der Build
+läuft grün durch, weil er die alten Quellen baut. Nicht committete Änderungen im Arbeitsverzeichnis lassen
+`applyPatches` dagegen mit einem Checkout-Fehler abbrechen.
 
 ```bash
-cd surf-inventory-framework && ./gradlew publishToMavenLocal
+cd surf-inventory-framework
+# Änderung in den Ziel-Commit falten und den Patch neu schreiben:
+(cd inventory-framework && git add -A && git commit --amend --no-edit --author="Keviro <keviro@slne.dev>")
+./gradlew makePatches
+perl -i -pe 's/\r\n/\n/g' patches/0006-*.patch   # makePatches schreibt unter Windows CRLF
+
+./gradlew publishToMavenLocal
 cd ../surf-api && ./gradlew :surf-api-paper:surf-api-paper-server:shadowJar \
   -PinventoryFramework.localVersion=1.0.5-packet-guis-SNAPSHOT
 ```
