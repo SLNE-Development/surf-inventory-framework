@@ -185,6 +185,23 @@ the id still fits in a signed byte, which older protocol versions require.
 `PacketViewerWindowTracker` is skipped on top of that. Against vanilla that is redundant; it still matters
 against another plugin that opens its own fake window in the same range.
 
+### Window reuse
+
+InventoryFramework builds a new context and a new container on every open, including when a view reopens
+itself to refresh. Giving each of those a new window id would make the client tear the screen down and build a
+new one — the cursor jumps back to the centre and the window flashes — for what the view meant as an in-place
+update.
+
+A new session therefore takes over the window of the session it replaces whenever the row count matches. The
+first render then diffs against the render the client is actually showing and sends only the slots that
+changed. A different title or row count still fails `PacketGuiRender#sameWindow`, which produces a real
+reopen. The container state id travels with the window rather than the session, because the client echoes it
+back and it has to keep increasing for as long as the window lives.
+
+While a viewer is inside `open()`, outbound close packets are dropped rather than forwarded. The client does
+not check which window a close belongs to — it closes whatever is on screen — and a session that reuses a
+window sends no open-screen packet afterwards that would put it back.
+
 ## Scheduling
 
 All GUI work runs on the thread that owns the viewer, scheduled through FoliaLib's `PlatformScheduler`, which

@@ -1274,10 +1274,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..35fca35c357d6746dcc44f04e4cab7893a08aa86
+index 0000000000000000000000000000000000000000..c282054e15bf024237037d4d0a576845e160f65f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1311 @@
+@@ -0,0 +1,1338 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1548,12 +1548,30 @@ index 0000000000000000000000000000000000000000..35fca35c357d6746dcc44f04e4cab789
 +            // it.
 +            closeRealInventory(player);
 +
++            // Replacing a view means a brand new context and container - IFs open pipeline builds both every
++            // time, including when a view reopens itself to refresh. Allocating a new window for that would
++            // make the client tear down the screen and build a new one: the cursor jumps back to the middle
++            // and the whole window flashes, for what the view intended as an in-place update.
++            //
++            // So the new session takes over the window of the one it replaces whenever the shape allows it.
++            // renderSession then diffs against the adopted render and only sends what actually changed; a
++            // different title or row count still fails sameWindow() and produces a real reopen.
++            final PacketGuiSession replaced = sessions.get(player.getUniqueId());
++            final boolean reuseWindow = isTracked(replaced)
++                    && !replaced.closeRequested()
++                    && replaced.container().getSize() == container.getSize();
++
 +            final PacketGuiSession session = new PacketGuiSession(
 +                    viewer,
 +                    user,
-+                    PacketGuiWindowIds.allocate(nextWindowId, externalWindowId),
++                    reuseWindow
++                            ? replaced.windowId()
++                            : PacketGuiWindowIds.allocate(nextWindowId, externalWindowId),
 +                    container,
 +                    windowTracker);
++            if (reuseWindow) {
++                session.adoptWindowStateFrom(replaced);
++            }
 +
 +            // Publish before the teardown: the close pipeline may re-enter open(), and the conditional remove
 +            // inside closeSession keeps it from evicting this session.
@@ -1574,7 +1592,7 @@ index 0000000000000000000000000000000000000000..35fca35c357d6746dcc44f04e4cab789
 +                return;
 +            }
 +
-+            renderSession(session, true, true);
++            renderSession(session, !reuseWindow, !reuseWindow);
 +        } finally {
 +            if (outermostOpen) {
 +                openingViewers.remove(player.getUniqueId());
@@ -1720,15 +1738,23 @@ index 0000000000000000000000000000000000000000..35fca35c357d6746dcc44f04e4cab789
 +        }
 +    }
 +
-+    void handleInventoryClosePacket(User user, int windowId) {
++    /**
++     * Handles an outbound close packet.
++     *
++     * @return {@code true} when the packet has to be dropped instead of forwarded to the client.
++     */
++    boolean handleInventoryClosePacket(User user, int windowId) {
 +        if (user == null || user.getUUID() == null) {
-+            return;
++            return false;
 +        }
 +
 +        if (openingViewers.contains(user.getUUID())) {
-+            // Emitted by our own open sequence while the previous view was being closed, not by the viewer
-+            // closing the window we are opening.
-+            return;
++            // Emitted by our own open sequence - by closing a real menu, or by the replaced view's close
++            // handlers - not by the viewer closing the window being opened. The client does not check which
++            // window a close belongs to, it closes whatever is on screen, so this must not reach it: a view
++            // that takes over the window of the one it replaces sends no open-screen packet afterwards that
++            // would put the screen back.
++            return true;
 +        }
 +
 +        final PacketGuiSession session = sessions.get(user.getUUID());
@@ -1751,10 +1777,11 @@ index 0000000000000000000000000000000000000000..35fca35c357d6746dcc44f04e4cab789
 +                // in its own inventory menu and does not get discarded.
 +                runOnPlayerNextTick(player, player::updateInventory);
 +            });
-+            return;
++            return false;
 +        }
 +
 +        closeTrackedWindow(user.getUUID(), windowId);
++        return false;
 +    }
 +
 +    /**
@@ -3351,10 +3378,10 @@ index 0000000000000000000000000000000000000000..196be89c5dab50da4ba15107d02df0f2
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b618da100d97fbc4796f78783e465842fa8d1ed
+index 0000000000000000000000000000000000000000..10b7b7b1ac84e6a8466e77a213dd60c86b879722
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,139 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.event.PacketListenerAbstract;
@@ -3479,7 +3506,9 @@ index 0000000000000000000000000000000000000000..7b618da100d97fbc4796f78783e46584
 +
 +        if (packetType == PacketType.Play.Server.CLOSE_WINDOW) {
 +            final WrapperPlayServerCloseWindow packet = new WrapperPlayServerCloseWindow(event);
-+            backend.handleInventoryClosePacket(user, packet.getWindowId());
++            if (backend.handleInventoryClosePacket(user, packet.getWindowId())) {
++                event.setCancelled(true);
++            }
 +        }
 +    }
 +
@@ -3809,10 +3838,10 @@ index 0000000000000000000000000000000000000000..862304c2a30d0bae12cb416567801644
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..b3e40b1dfd7e088a7bf11be24e8c3ffef965b231
+index 0000000000000000000000000000000000000000..68864c7b5fe8a109c1cbaebc5815022a933e5677
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,159 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
@@ -3925,6 +3954,22 @@ index 0000000000000000000000000000000000000000..b3e40b1dfd7e088a7bf11be24e8c3ffe
 +
 +    synchronized int nextStateId() {
 +        return stateId++;
++    }
++
++    synchronized int currentStateId() {
++        return stateId;
++    }
++
++    /**
++     * Adopts the client-visible state of the session whose window this one is taking over.
++     *
++     * <p>The applied render so the first render diffs against what the client actually shows instead of
++     * resending everything, and the container state id because the client echoes it back and it has to keep
++     * increasing for as long as the window lives - it belongs to the window, not to the session.
++     */
++    synchronized void adoptWindowStateFrom(PacketGuiSession previous) {
++        this.appliedRender = previous.appliedRender();
++        this.stateId = previous.currentStateId();
 +    }
 +
 +    synchronized long nextSendGeneration() {
