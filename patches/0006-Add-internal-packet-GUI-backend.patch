@@ -1274,10 +1274,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..9caa85bcb6bb70bc27d522fdefd5c4df750d19df
+index 0000000000000000000000000000000000000000..9fc0c7b9f5bebc8388c9b808c13359be85770404
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1467 @@
+@@ -0,0 +1,1525 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1529,17 +1529,29 @@ index 0000000000000000000000000000000000000000..9caa85bcb6bb70bc27d522fdefd5c4df
 +    }
 +
 +    void open(@NotNull BukkitViewer viewer, @NotNull PacketViewContainer container) {
++        open(viewer, container, true);
++    }
++
++    private void open(BukkitViewer viewer, PacketViewContainer container, boolean mayRetry) {
 +        if (!isOnPlayerThread(viewer.getPlayer())) {
-+            runOnPlayer(viewer.getPlayer(), () -> open(viewer, container));
++            runOnPlayer(viewer.getPlayer(), () -> open(viewer, container, mayRetry));
 +            return;
 +        }
 +
 +        final Player player = viewer.getPlayer();
 +        final User user = user(player.getUniqueId());
 +        if (user == null) {
++            if (mayRetry) {
++                // Most likely a player whose connection PacketEvents has not registered yet, which one tick
++                // resolves. A single retry covers that without risking a loop.
++                runOnPlayerNextTick(player, () -> open(viewer, container, false));
++                return;
++            }
++
 +            owner.getLogger()
 +                    .warning("Unable to open packet GUI for " + player.getName()
-+                            + ": PacketEvents has no user for this player.");
++                            + ": PacketEvents has no user for this player. Releasing the view.");
++            releaseUnopenedView(viewer, container);
 +            return;
 +        }
 +
@@ -2626,20 +2638,66 @@ index 0000000000000000000000000000000000000000..9caa85bcb6bb70bc27d522fdefd5c4df
 +     * Releases the framework's own hold on an abandoned viewer.
 +     *
 +     * <p>The CLOSE pipeline is deliberately not run: it executes developer code, and the reason this method
-+     * exists at all is that no thread will accept work for the viewer any more. Without this, though, the
-+     * view would keep listing a viewer that has no window and never gets one back, which leaks the context
-+     * for as long as the view lives.
++     * exists at all is that no thread will accept work for the viewer any more. Without this, though, the view
++     * would keep listing a viewer that has no window and never gets one back, which leaks the context for as
++     * long as the view lives.
++     *
++     * <p>Hopped to the global tick thread instead of done inline. The removal mutates the context's viewer
++     * list, the framework's global viewer map and the root's context list - plain collections the main thread
++     * iterates - and this runs from a scheduler fallback that can fire on a netty thread. Deliberately not the
++     * viewer's own scheduler: that one refusing work is what brought us here.
 +     */
-+    @SuppressWarnings({"unchecked", "rawtypes"})
 +    private void detachAbandonedViewer(PacketGuiSession session) {
++        detachViewer(session.viewer(), session.context());
++    }
++
++    /**
++     * Releases a view the backend was asked to open but never could.
++     *
++     * <p>By this point IF has already registered the viewer with the framework and with the context, and
++     * committed the container as a packet container. Simply returning would leave the viewer bound to a window
++     * that does not exist and that nothing can ever finalize - no close packet, quit handler or external open
++     * reaches a session that was never created.
++     */
++    private void releaseUnopenedView(BukkitViewer viewer, PacketViewContainer container) {
++        detachViewer(viewer, container.getContext());
++    }
++
++    /**
++     * Hands a viewer back to the framework, on the global tick thread.
++     *
++     * <p>The removal mutates the context's viewer list, the framework's global viewer map and the root's
++     * context list - plain collections the main thread iterates - while the callers reach this from a scheduler
++     * fallback that can fire on a netty thread. Deliberately not the viewer's own scheduler: in the abandoned
++     * case, that one refusing work is what brought us here.
++     */
++    private void detachViewer(BukkitViewer viewer, IFRenderContext context) {
++        if (scheduler.isGlobalTickThread()) {
++            detachViewerNow(viewer, context);
++            return;
++        }
++
 +        try {
-+            final IFRenderContext context = session.context();
++            scheduler.runNextTick(ignored -> detachViewerNow(viewer, context));
++        } catch (final RuntimeException exception) {
++            owner.getLogger()
++                    .log(
++                            Level.WARNING,
++                            "Could not schedule the detach of a packet GUI viewer; the view keeps listing it "
++                                    + "until it is invalidated",
++                            exception);
++        }
++    }
++
++    @SuppressWarnings({"unchecked", "rawtypes"})
++    private void detachViewerNow(BukkitViewer viewer, IFRenderContext context) {
++        try {
 +            final RootView root = context.getRoot();
 +            if (root instanceof PlatformView) {
-+                ((PlatformView) root).removeAndTryInvalidateContext(session.viewer(), context);
++                ((PlatformView) root).removeAndTryInvalidateContext(viewer, context);
 +            }
 +        } catch (final RuntimeException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to detach an abandoned packet GUI viewer", exception);
++            owner.getLogger().log(Level.WARNING, "Failed to detach a packet GUI viewer", exception);
 +        }
 +    }
 +
@@ -3567,10 +3625,10 @@ index 0000000000000000000000000000000000000000..e4bea5df501492e2bdb4e4e7f9235afa
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..10b7b7b1ac84e6a8466e77a213dd60c86b879722
+index 0000000000000000000000000000000000000000..d30e76b1540243b24cc0fb5f1ba05a5c5668f524
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,144 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.event.PacketListenerAbstract;
@@ -3628,7 +3686,12 @@ index 0000000000000000000000000000000000000000..10b7b7b1ac84e6a8466e77a213dd60c8
 +        if (packetType == PacketType.Play.Client.CLOSE_WINDOW) {
 +            final WrapperPlayClientCloseWindow packet = new WrapperPlayClientCloseWindow(event);
 +            if (backend.isGuiWindow(event.getUser(), packet.getWindowId())) {
-+                event.setCancelled(false);
++                // Cancelled, like the click above, and no longer force-uncancelled. The server has no container
++                // open for a fake window, so there is nothing for vanilla to reset - all its close handling
++                // would do is fire an InventoryCloseEvent for the player's *own* inventory on every packet GUI
++                // close, which other plugins see and misread. Un-cancelling also overrode whatever another
++                // listener had decided about this packet.
++                event.setCancelled(true);
 +                backend.handleWindowClose(event.getUser(), packet.getWindowId());
 +                return;
 +            }
