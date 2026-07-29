@@ -2950,10 +2950,10 @@ index 0000000000000000000000000000000000000000..0da7f70a1658150890b2500d7251bef4
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..196be89c5dab50da4ba15107d02df0f24d0babdc
+index 0000000000000000000000000000000000000000..e5116d3176619755c4c961b0e51175e37136b185
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,504 @@
+@@ -0,0 +1,507 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
@@ -3191,7 +3191,10 @@ index 0000000000000000000000000000000000000000..196be89c5dab50da4ba15107d02df0f2
 +        }
 +
 +        try {
-+            final Object converted = asNmsCopy.invoke(null, PacketItemConverter.normalizedCopy(item));
++            // No styling here. This method converts everything the backend sends, including the viewer's own
++            // items in the bottom rows and on the cursor; normalizing those would restyle items the backend
++            // does not own. GUI icons are normalized where they are produced, in PacketGuiRender#bukkitItem.
++            final Object converted = asNmsCopy.invoke(null, item);
 +            return converted == null ? emptyItemStack : converted;
 +        } catch (final ReflectiveOperationException exception) {
 +            throw new IllegalStateException("Failed to convert Bukkit item to native item stack", exception);
@@ -3605,10 +3608,10 @@ index 0000000000000000000000000000000000000000..10b7b7b1ac84e6a8466e77a213dd60c8
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..b08e2dc2684aa5ca04844b5f496a0a4e1c5174d5
+index 0000000000000000000000000000000000000000..edd29c3d67e3f5e7921f1ff9487f3c2d40333e70
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRender.java
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,84 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.Objects;
@@ -3657,9 +3660,16 @@ index 0000000000000000000000000000000000000000..b08e2dc2684aa5ca04844b5f496a0a4e
 +        return topItems.length;
 +    }
 +
++    /**
++     * The item to draw in a top slot.
++     *
++     * <p>Normalized here rather than in the outbound sender. The sender also carries the viewer's own items
++     * into the bottom rows, and restyling those would make an item look different inside a GUI than in the
++     * player's own inventory. Only items this render owns are GUI icons.
++     */
 +    ItemStack bukkitItem(int slot) {
 +        final ItemStack item = topItems[slot];
-+        return item == null ? null : item.clone();
++        return item == null ? null : PacketItemConverter.normalizedCopy(item);
 +    }
 +
 +    boolean sameWindow(PacketGuiRender other) {
@@ -4261,10 +4271,10 @@ index 0000000000000000000000000000000000000000..c6ed7053e89d189987f66763d4ecacdb
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..64a961f8ad57fff4c73976a3fc111953d2d317b4
+index 0000000000000000000000000000000000000000..b0c8652ec892db77b5e3f591f016c902a882b106
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
-@@ -0,0 +1,203 @@
+@@ -0,0 +1,211 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Method;
@@ -4460,7 +4470,15 @@ index 0000000000000000000000000000000000000000..64a961f8ad57fff4c73976a3fc111953
 +     * <p>Only the root style is touched, and only when it does not already carry an explicit decision: children
 +     * inherit the root's decoration, so rewriting them would destroy italics a view set on purpose.
 +     */
-+    private static Component forceNonItalic(Component component) {
++    /**
++     * Pins the italic decoration to {@code false} when, and only when, the component leaves it unspecified.
++     *
++     * <p>Vanilla renders an unspecified custom name in italics, which is not what a GUI icon wants. An explicit
++     * italic state - either way - is somebody's decision and is left alone. Package-private so the distinction
++     * can be tested without a server; it is what separates "give GUI icons a sane default" from "restyle
++     * items".
++     */
++    static Component forceNonItalic(Component component) {
 +        if (component.decoration(TextDecoration.ITALIC) != TextDecoration.State.NOT_SET) {
 +            return component;
 +        }
@@ -5383,6 +5401,111 @@ index 0000000000000000000000000000000000000000..662e20f77195cda3a67631e605c9ec60
 +                        "round trip failed for topSize " + topSize + " gui slot " + guiSlot);
 +            }
 +        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverterTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverterTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f98d396a699338ec2433ac0be110cb224cc4766e
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverterTest.java
+@@ -0,0 +1,99 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.TextDecoration;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins down exactly which names {@link PacketItemConverter#forceNonItalic} restyles.
++ *
++ * <p>It matters where that line falls. The normalization exists so a GUI icon does not inherit vanilla's
++ * default italics for a custom name, but the same conversion path also carries the viewer's own items into the
++ * bottom rows of a packet GUI - anything it changes there makes an item look different inside a GUI than in
++ * the player's own inventory.
++ */
++class PacketItemConverterTest {
++
++    /**
++     * The case the normalization exists for: vanilla renders a name that does not specify its italic state in
++     * italics, which is not what a GUI icon wants.
++     */
++    @Test
++    void pinsItalicToFalseWhenTheNameLeavesItUnspecified() {
++        final Component name = Component.text("Renamed Sword");
++        assertEquals(
++                TextDecoration.State.NOT_SET,
++                name.decoration(TextDecoration.ITALIC),
++                "precondition: a plain text component leaves italic unspecified");
++
++        final Component normalized = PacketItemConverter.forceNonItalic(name);
++
++        assertEquals(TextDecoration.State.FALSE, normalized.decoration(TextDecoration.ITALIC));
++    }
++
++    /**
++     * A deliberately italic name must survive untouched - whoever set it meant it. This is the difference
++     * between defaulting and restyling.
++     */
++    @Test
++    void keepsAnExplicitlyItalicNameItalic() {
++        final Component name = Component.text("Fancy Sword").decoration(TextDecoration.ITALIC, true);
++
++        final Component normalized = PacketItemConverter.forceNonItalic(name);
++
++        assertSame(name, normalized, "an explicit italic state must not be rewritten at all");
++        assertEquals(TextDecoration.State.TRUE, normalized.decoration(TextDecoration.ITALIC));
++    }
++
++    @Test
++    void keepsAnExplicitlyNonItalicNameUntouched() {
++        final Component name = Component.text("Plain Sword").decoration(TextDecoration.ITALIC, false);
++
++        assertSame(name, PacketItemConverter.forceNonItalic(name));
++    }
++
++    /**
++     * Only the component the decoration is read from matters - a child that specifies nothing still inherits,
++     * so the parent's pinned state is what the client ends up rendering.
++     */
++    @Test
++    void pinsTheRootOfANestedNameThatLeavesItalicUnspecified() {
++        final Component name = Component.text("Sword ").append(Component.text("of Testing"));
++
++        final Component normalized = PacketItemConverter.forceNonItalic(name);
++
++        assertEquals(TextDecoration.State.FALSE, normalized.decoration(TextDecoration.ITALIC));
++    }
++
++    @Test
++    void treatsNullAirAndEmptyStacksAsEmpty() {
++        assertTrue(PacketItemConverter.isEmpty(null));
++        assertTrue(PacketItemConverter.isEmpty(stack(Material.AIR, 1)));
++        assertTrue(PacketItemConverter.isEmpty(stack(Material.STONE, 0)));
++        assertFalse(PacketItemConverter.isEmpty(stack(Material.STONE, 1)));
++    }
++
++    @Test
++    void comparesTypeAndAmountBeforeAnythingElse() {
++        assertTrue(PacketItemConverter.sameDisplayItem(null, stack(Material.AIR, 1)));
++        assertFalse(PacketItemConverter.sameDisplayItem(stack(Material.STONE, 1), stack(Material.DIRT, 1)));
++        assertFalse(PacketItemConverter.sameDisplayItem(stack(Material.STONE, 1), stack(Material.STONE, 2)));
++        assertFalse(PacketItemConverter.sameDisplayItem(null, stack(Material.STONE, 1)));
++    }
++
++    private static ItemStack stack(Material type, int amount) {
++        final ItemStack item = mock(ItemStack.class);
++        when(item.getType()).thenReturn(type);
++        when(item.getAmount()).thenReturn(amount);
++        return item;
 +    }
 +}
 diff --git a/settings.gradle.kts b/settings.gradle.kts
