@@ -162,6 +162,10 @@ The top rows come from the view's own render model in `PacketViewContainer`; the
 contents. The bottom rows are read live from the viewer's Bukkit inventory and sent through
 `PacketGuiNativeOutboundSender`, i.e. the same outbound path vanilla uses.
 
+Those bottom rows are repainted with one slot packet each, never with a container content packet. A content
+packet addresses the whole window, so the client redraws the top rows too — visually a full refresh of a GUI
+the server only meant to touch the bottom of. The packet count is the deliberate price for that.
+
 That last point matters for surf-api's PacketLore: because the packets travel the server's normal outbound
 path, an enchanted item in the viewer's inventory shows its enchantment lore inside a packet GUI exactly as it
 does anywhere else, decorated once. The backend deliberately keeps **no** mirror of the viewer's items — items

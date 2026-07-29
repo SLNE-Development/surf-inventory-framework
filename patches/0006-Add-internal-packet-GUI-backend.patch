@@ -1274,10 +1274,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..a633305b82d9027fd1a3bfc7206441e78bc13236
+index 0000000000000000000000000000000000000000..35fca35c357d6746dcc44f04e4cab7893a08aa86
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1314 @@
+@@ -0,0 +1,1311 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1827,10 +1827,33 @@ index 0000000000000000000000000000000000000000..a633305b82d9027fd1a3bfc7206441e7
 +        return user != null && user.getUUID() != null && isTracked(sessions.get(user.getUUID()));
 +    }
 +
++    /**
++     * Repaints the bottom rows of an open GUI after the server resent the viewer's own inventory.
++     *
++     * <p>Deliberately one slot packet per mirrored slot rather than a single container content packet. The
++     * protocol has no "set these slots" form: the alternative addresses the whole window, which the client
++     * treats as a full resync and redraws accordingly. Trading 36 packets for a visible repaint of rows the
++     * server never meant to touch is the wrong way round.
++     */
 +    private void mirrorPlayerInventoryWindow(UUID viewerId) {
 +        final PacketGuiSession session = sessions.get(viewerId);
 +        if (!isTracked(session) || session.closeRequested()) {
 +            return;
++        }
++
++        final int topSize = session.container().getSize();
++        final List<Integer> guiSlots = new ArrayList<>(36);
++        final List<Integer> playerSlots = new ArrayList<>(36);
++        for (int slot = PacketInventoryConstants.ITEMS_START;
++                slot < PacketInventoryConstants.HOTBAR_START + 9;
++                slot++) {
++            final int guiSlot = mapPlayerWindowSlotToOpenGuiSlot(topSize, slot);
++            if (guiSlot < 0) {
++                continue;
++            }
++
++            guiSlots.add(guiSlot);
++            playerSlots.add(slot);
 +        }
 +
 +        runOnPlayer(session.player(), () -> {
@@ -1840,47 +1863,21 @@ index 0000000000000000000000000000000000000000..a633305b82d9027fd1a3bfc7206441e7
 +            }
 +
 +            try {
-+                // One content packet rather than 36 slot packets. The trigger is any player#updateInventory
-+                // while a GUI is open, which the backend itself performs on close and which other plugins
-+                // call routinely, so the difference is not academic.
-+                sender.sendContainerSetContent(
-+                        session.player(),
-+                        session.windowId(),
-+                        session.nextStateId(),
-+                        currentWindowContents(session),
-+                        cloneItem(session.player().getItemOnCursor()));
++                final int stateId = session.nextStateId();
++                for (int index = 0; index < guiSlots.size(); index++) {
++                    sender.sendContainerSetSlot(
++                            session.player(),
++                            session.windowId(),
++                            stateId,
++                            guiSlots.get(index),
++                            cloneItem(playerInventoryItem(session.player(), playerSlots.get(index))));
++                }
 +            } catch (final RuntimeException exception) {
 +                owner.getLogger()
 +                        .log(Level.WARNING, "Failed to mirror the player inventory into a packet GUI", exception);
 +                closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
 +            }
 +        });
-+    }
-+
-+    /**
-+     * The full slot list of an open GUI window: the rendered top rows followed by the viewer's live main
-+     * inventory and hotbar, in the order the container content packet expects them.
-+     *
-+     * <p>The top rows come from the last applied render so a mirror pass cannot roll the window back to
-+     * whatever the container held at some other point in time.
-+     */
-+    private static List<ItemStack> currentWindowContents(PacketGuiSession session) {
-+        final int topSize = session.container().getSize();
-+        final PacketGuiRender render = session.appliedRender();
-+        final boolean useRender = render != null && render.size() == topSize;
-+
-+        final List<ItemStack> items = new ArrayList<>(topSize + 36);
-+        for (int slot = 0; slot < topSize; slot++) {
-+            items.add(useRender ? render.bukkitItem(slot) : session.container().item(slot));
-+        }
-+
-+        for (int slot = PacketInventoryConstants.ITEMS_START;
-+                slot < PacketInventoryConstants.HOTBAR_START + 9;
-+                slot++) {
-+            items.add(cloneItem(playerInventoryItem(session.player(), slot)));
-+        }
-+
-+        return items;
 +    }
 +
 +    private void mirrorPlayerInventorySlot(UUID viewerId, int playerWindowSlot) {
