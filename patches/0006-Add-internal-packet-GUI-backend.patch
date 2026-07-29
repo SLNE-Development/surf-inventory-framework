@@ -1280,10 +1280,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..8aca42c5731265b62b92a081de6d157d3e32d123
+index 0000000000000000000000000000000000000000..d44194b4995e84041a053008f1fc95d553f949c8
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1561 @@
+@@ -0,0 +1,1565 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1317,6 +1317,7 @@ index 0000000000000000000000000000000000000000..8aca42c5731265b62b92a081de6d157d
 +import me.devnatan.inventoryframework.internal.BukkitGuiBackend;
 +import me.devnatan.inventoryframework.internal.GuiBackend;
 +import me.devnatan.inventoryframework.pipeline.StandardPipelinePhases;
++import org.bukkit.GameMode;
 +import org.bukkit.Material;
 +import org.bukkit.entity.Player;
 +import org.bukkit.event.inventory.InventoryAction;
@@ -2072,7 +2073,7 @@ index 0000000000000000000000000000000000000000..8aca42c5731265b62b92a081de6d157d
 +                session.player(),
 +                currentItem,
 +                slotTypeOf(click, topSize),
-+                actionOf(click, outsideClick),
++                actionOf(click, outsideClick, session.player()),
 +                click.isKeyboardClick() && !click.isOffhandSwapClick() ? click.button() : -1,
 +                click.slot(),
 +                convertedSlot,
@@ -2759,7 +2760,7 @@ index 0000000000000000000000000000000000000000..8aca42c5731265b62b92a081de6d157d
 +     * Best-effort mapping from the wire click to a Bukkit action. The packet protocol carries less information
 +     * than Bukkit's action enum, so this is a label for consumers, not a contract.
 +     */
-+    private static InventoryAction actionOf(PacketGuiClick click, boolean outsideClick) {
++    private static InventoryAction actionOf(PacketGuiClick click, boolean outsideClick, Player player) {
 +        // A packet GUI never puts anything on the real cursor, so an outside click drops nothing. Bukkit
 +        // reports NOTHING for the same click with an empty cursor; without this, the left-button form would
 +        // surface as PICKUP_ALL and contradict the OUTSIDE slot type.
@@ -2767,7 +2768,10 @@ index 0000000000000000000000000000000000000000..8aca42c5731265b62b92a081de6d157d
 +
 +        if (click.isShiftClick()) return InventoryAction.MOVE_TO_OTHER_INVENTORY;
 +        if (click.isKeyboardClick()) return InventoryAction.HOTBAR_SWAP;
-+        if (click.isMiddleClick()) return InventoryAction.CLONE_STACK;
++        // Vanilla only reports CLONE_STACK for a creative-mode viewer; in survival the same click is NOTHING.
++        if (click.isMiddleClick()) {
++            return player.getGameMode() == GameMode.CREATIVE ? InventoryAction.CLONE_STACK : InventoryAction.NOTHING;
++        }
 +        if (click.isLeftClick()) return InventoryAction.PICKUP_ALL;
 +        if (click.isRightClick()) return InventoryAction.PICKUP_HALF;
 +
@@ -2847,10 +2851,10 @@ index 0000000000000000000000000000000000000000..8aca42c5731265b62b92a081de6d157d
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..28681143031d27744d5cad88b6845bde7112db44
+index 0000000000000000000000000000000000000000..3b94afd49d429b52d37f2a8a89e97dd77bd57236
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClick.java
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,255 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow;
@@ -2867,6 +2871,7 @@ index 0000000000000000000000000000000000000000..28681143031d27744d5cad88b6845bde
 +final class PacketGuiClick {
 +
 +    private static final int OFFHAND_SWAP_BUTTON = 40;
++    private static final int CLONE_BUTTON = 2;
 +    private static final int[] EMPTY_CHANGED_SLOTS = new int[0];
 +
 +    private final int windowId;
@@ -3066,8 +3071,14 @@ index 0000000000000000000000000000000000000000..28681143031d27744d5cad88b6845bde
 +                && ((button >= 0 && button <= 8) || button == OFFHAND_SWAP_BUTTON);
 +    }
 +
++    /**
++     * Middle-click. Vanilla only treats button 2 of mode CLONE as a middle click
++     * ({@code ServerGamePacketListenerImpl}: {@code case CLONE: if (packet.buttonNum() == 2)}); every other
++     * button of that mode becomes {@code ClickType.UNKNOWN}. Gating on the button here sends those down the
++     * fail-closed path instead of reporting them as a middle click the Bukkit backend would never report.
++     */
 +    private boolean isCloneClick() {
-+        return clickType == WrapperPlayClientClickWindow.WindowClickType.CLONE;
++        return clickType == WrapperPlayClientClickWindow.WindowClickType.CLONE && button == CLONE_BUTTON;
 +    }
 +
 +    @SuppressWarnings("deprecation")
@@ -4492,10 +4503,10 @@ index 0000000000000000000000000000000000000000..c6ed7053e89d189987f66763d4ecacdb
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..b0c8652ec892db77b5e3f591f016c902a882b106
+index 0000000000000000000000000000000000000000..34a64a354009f8c34cd20f2eeaaa398c926be4e5
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverter.java
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,204 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Method;
@@ -4684,13 +4695,6 @@ index 0000000000000000000000000000000000000000..b0c8652ec892db77b5e3f591f016c902
 +        }
 +    }
 +
-+    /**
-+     * Marks a component as explicitly non-italic so Minecraft does not apply its default italic styling to item
-+     * names and lore.
-+     *
-+     * <p>Only the root style is touched, and only when it does not already carry an explicit decision: children
-+     * inherit the root's decoration, so rewriting them would destroy italics a view set on purpose.
-+     */
 +    /**
 +     * Pins the italic decoration to {@code false} when, and only when, the component leaves it unspecified.
 +     *
@@ -5115,10 +5119,10 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..63740935ffd8eb538298a895696c8fcdef0c2489
+index 0000000000000000000000000000000000000000..fc33971ee16bb9cfe4cf303e278045775b3891f9
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,182 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -5142,7 +5146,7 @@ index 0000000000000000000000000000000000000000..63740935ffd8eb538298a895696c8fcd
 +                PacketGuiClick.of(1, 0, 0, WindowClickType.PICKUP).repairScope(TOP_SIZE));
 +        assertEquals(
 +                PacketGuiRepairScope.TOP_SLOT_AND_CURSOR,
-+                PacketGuiClick.of(1, 0, 0, WindowClickType.CLONE).repairScope(TOP_SIZE));
++                PacketGuiClick.of(1, 0, 2, WindowClickType.CLONE).repairScope(TOP_SIZE));
 +        assertEquals(
 +                PacketGuiRepairScope.TOP_SLOT_CURSOR_AND_PLAYER_SLOT,
 +                PacketGuiClick.of(1, 0, 1, WindowClickType.QUICK_MOVE).repairScope(TOP_SIZE));
@@ -5221,6 +5225,27 @@ index 0000000000000000000000000000000000000000..63740935ffd8eb538298a895696c8fcd
 +            assertTrue(right.isRightClick(), "isRightClick for outside " + type);
 +            assertFalse(right.isLeftClick(), "isLeftClick for outside " + type);
 +            assertEquals("RIGHT", right.clickIdentifier());
++        }
++    }
++
++    /**
++     * Vanilla only treats button 2 of mode CLONE as a middle click; every other button of that mode becomes
++     * ClickType.UNKNOWN. Anything else must therefore fail closed rather than be reported as a middle click
++     * the Bukkit backend would never produce.
++     */
++    @Test
++    void onlyButtonTwoOfCloneIsAMiddleClick() {
++        assertTrue(PacketGuiClick.of(1, 0, 2, WindowClickType.CLONE).isMiddleClick());
++        assertEquals("MIDDLE", PacketGuiClick.of(1, 0, 2, WindowClickType.CLONE).clickIdentifier());
++
++        for (final int button : new int[] {0, 1, 3, 4, 40}) {
++            final PacketGuiClick click = PacketGuiClick.of(1, 0, button, WindowClickType.CLONE);
++            assertFalse(click.isMiddleClick(), "isMiddleClick for CLONE/" + button);
++            assertEquals("UNKNOWN", click.clickIdentifier(), "identifier for CLONE/" + button);
++            assertEquals(
++                    PacketGuiRepairScope.FULL_WINDOW,
++                    click.repairScope(TOP_SIZE),
++                    "CLONE/" + button + " must fail closed");
 +        }
 +    }
 +

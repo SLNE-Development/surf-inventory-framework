@@ -34,8 +34,11 @@ jobs:
       - name: Apply patches
         run: ./gradlew applyPatches --stacktrace
 
-      - name: Test
-        run: ./gradlew testPatched --stacktrace
+      # shadowJar as well as the tests: `test` never builds the artifacts that actually ship, so a break in
+      # the javadoc or shadow configuration would otherwise only surface in the release job on master.
+      # spotless stays out while palantir-java-format is broken on JDK 25.
+      - name: Test and assemble
+        run: ./gradlew testPatched shadowJar --stacktrace
 
       # A patch that no longer round-trips is the fork's easiest mistake: hand-editing patches/, or editing
       # the target repository without regenerating. Both produce a tree that builds locally and cannot be
