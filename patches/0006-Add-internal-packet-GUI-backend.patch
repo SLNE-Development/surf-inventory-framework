@@ -268,10 +268,10 @@ index 2d97a162afacb6aa9652d9d83079088761bbd35b..4dc75f811d1a888cee0851a70377ac76
      // region Internals
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..72d6166df08878e2e7a53864427ab4141728061a
+index 0000000000000000000000000000000000000000..8c389980937dfc38c7daf3b513a48a627d115343
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/BukkitSlotClickOrigin.java
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,121 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -321,6 +321,11 @@ index 0000000000000000000000000000000000000000..72d6166df08878e2e7a53864427ab414
 +    @Override
 +    public int getRawSlot() {
 +        return event.getRawSlot();
++    }
++
++    @Override
++    public int getConvertedSlot() {
++        return event.getSlot();
 +    }
 +
 +    @Override
@@ -402,10 +407,10 @@ index d73ddb29859761e6505b001fb4d303f953cb99e3..686664b4211880e0dc7651cebda4e66c
  import org.jetbrains.annotations.UnmodifiableView;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..0bcf210d460ef6ec23a92fc658904b852e8f50d2
+index 0000000000000000000000000000000000000000..f7400c621a2afd63c280e2592057f04dfb6b408f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,125 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -485,9 +490,16 @@ index 0000000000000000000000000000000000000000..0bcf210d460ef6ec23a92fc658904b85
 +        return origin.getRawSlot();
 +    }
 +
++    /**
++     * The index inside the clicked inventory, not the view-wide raw slot.
++     *
++     * <p>Returning the raw slot here would be wrong for every bottom click - and
++     * {@code player.getInventory().getItem(event.getSlot())} is the single most common thing a consumer of
++     * this event does.
++     */
 +    @Override
 +    public int getSlot() {
-+        return origin.getRawSlot();
++        return origin.getConvertedSlot();
 +    }
 +
 +    @Override
@@ -526,15 +538,16 @@ index 0000000000000000000000000000000000000000..0bcf210d460ef6ec23a92fc658904b85
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ee11f62518dbaf6e61c43d3ba5817249d330494
+index 0000000000000000000000000000000000000000..2335ec52e1b6d2ce0b0bf2927789c9d0c5eec4e9
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,177 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
 +import org.bukkit.event.inventory.InventoryAction;
 +import org.bukkit.event.inventory.InventoryType;
++import org.bukkit.inventory.Inventory;
 +import org.bukkit.inventory.ItemStack;
 +import org.jetbrains.annotations.ApiStatus;
 +import org.jetbrains.annotations.NotNull;
@@ -549,6 +562,8 @@ index 0000000000000000000000000000000000000000..4ee11f62518dbaf6e61c43d3ba581724
 +    private final InventoryAction action;
 +    private final int hotbarButton;
 +    private final int rawSlot;
++    private final int convertedSlot;
++    private final Inventory clickedInventory;
 +    private final String clickIdentifier;
 +    private final boolean leftClick;
 +    private final boolean rightClick;
@@ -570,6 +585,8 @@ index 0000000000000000000000000000000000000000..4ee11f62518dbaf6e61c43d3ba581724
 +            @NotNull InventoryAction action,
 +            int hotbarButton,
 +            int rawSlot,
++            int convertedSlot,
++            @Nullable Inventory clickedInventory,
 +            @NotNull String clickIdentifier,
 +            boolean leftClick,
 +            boolean rightClick,
@@ -584,6 +601,8 @@ index 0000000000000000000000000000000000000000..4ee11f62518dbaf6e61c43d3ba581724
 +        this.action = action;
 +        this.hotbarButton = hotbarButton;
 +        this.rawSlot = rawSlot;
++        this.convertedSlot = convertedSlot;
++        this.clickedInventory = clickedInventory;
 +        this.clickIdentifier = clickIdentifier;
 +        this.leftClick = leftClick;
 +        this.rightClick = rightClick;
@@ -617,6 +636,22 @@ index 0000000000000000000000000000000000000000..4ee11f62518dbaf6e61c43d3ba581724
 +    @Override
 +    public int getRawSlot() {
 +        return rawSlot;
++    }
++
++    @Override
++    public int getConvertedSlot() {
++        return convertedSlot;
++    }
++
++    /**
++     * The viewer's own inventory for a bottom click, {@code null} otherwise.
++     *
++     * <p>The top rows of a packet GUI have no Bukkit {@link Inventory} behind them - that is the whole point
++     * of the backend - so a top click has nothing truthful to report here.
++     */
++    @Override
++    public @Nullable Inventory getClickedInventory() {
++        return clickedInventory;
 +    }
 +
 +    @Override
@@ -930,10 +965,10 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..92eb5a88f4fbe962ed36ca2f80bf8daa
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..8046cc16d595b3eafebc38ecec3a99d871bddcd4
+index 0000000000000000000000000000000000000000..7b6fb15141e24a98bbaa7a91416fea13042a3a8a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickOrigin.java
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,92 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -970,6 +1005,17 @@ index 0000000000000000000000000000000000000000..8046cc16d595b3eafebc38ecec3a99d8
 +    Object getPlatformEvent();
 +
 +    int getRawSlot();
++
++    /**
++     * The index of the clicked slot <em>inside</em> {@link #getClickedInventory()}, i.e. what Bukkit's
++     * {@link org.bukkit.event.inventory.InventoryClickEvent#getSlot()} reports.
++     *
++     * <p>Only equal to {@link #getRawSlot()} for slots of the top container; a click in the viewer's own
++     * inventory carries a view-wide raw slot but a much smaller inventory index.
++     */
++    default int getConvertedSlot() {
++        return getRawSlot();
++    }
 +
 +    /**
 +     * The Bukkit slot type of the clicked slot.
@@ -1228,10 +1274,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..25a27b4bac62fb099370198b1ea2238c00d73b37
+index 0000000000000000000000000000000000000000..c19f114c8f0a37f485ba640a6a4ba5d59950ac49
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1261 @@
+@@ -0,0 +1,1276 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1871,13 +1917,23 @@ index 0000000000000000000000000000000000000000..25a27b4bac62fb099370198b1ea2238c
 +            clickedContainer = context.getContainer();
 +        }
 +
++        // Bukkit reports getSlot() relative to the clicked inventory and getRawSlot() relative to the whole
++        // view. They only coincide for the top container, so a bottom click has to carry the player
++        // inventory index alongside the raw slot - consumers of the synthesized InventoryClickEvent read it
++        // to address the viewer's own inventory.
++        final int convertedSlot = playerInventoryClick
++                ? PacketInventoryConstants.containerSlotToPlayerInventorySlot(mappedPlayerSlot)
++                : click.slot();
++
 +        final PacketSlotClickOrigin origin = new PacketSlotClickOrigin(
 +                session.player(),
 +                currentItem,
 +                slotTypeOf(click, topSize),
-+                actionOf(click),
++                actionOf(click, outsideClick),
 +                click.isKeyboardClick() && !click.isOffhandSwapClick() ? click.button() : -1,
 +                click.slot(),
++                convertedSlot,
++                playerInventoryClick ? session.player().getInventory() : null,
 +                click.clickIdentifier(),
 +                click.isLeftClick(),
 +                click.isRightClick(),
@@ -2412,7 +2468,12 @@ index 0000000000000000000000000000000000000000..25a27b4bac62fb099370198b1ea2238c
 +     * Best-effort mapping from the wire click to a Bukkit action. The packet protocol carries less information
 +     * than Bukkit's action enum, so this is a label for consumers, not a contract.
 +     */
-+    private static InventoryAction actionOf(PacketGuiClick click) {
++    private static InventoryAction actionOf(PacketGuiClick click, boolean outsideClick) {
++        // A packet GUI never puts anything on the real cursor, so an outside click drops nothing. Bukkit
++        // reports NOTHING for the same click with an empty cursor; without this, the left-button form would
++        // surface as PICKUP_ALL and contradict the OUTSIDE slot type.
++        if (outsideClick) return InventoryAction.NOTHING;
++
 +        if (click.isShiftClick()) return InventoryAction.MOVE_TO_OTHER_INVENTORY;
 +        if (click.isKeyboardClick()) return InventoryAction.HOTBAR_SWAP;
 +        if (click.isMiddleClick()) return InventoryAction.CLONE_STACK;
