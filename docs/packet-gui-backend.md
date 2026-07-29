@@ -70,9 +70,11 @@ Startup log lines to look for:
   such a type is encountered it is logged once at INFO.
 - **The viewer's own inventory is effectively read-only while a packet GUI is open.** Click packets are
   cancelled before vanilla sees them, so nothing moves by itself. A view can still act on bottom-inventory
-  clicks: the click is delivered as an entity-container click, and a handler that calls
-  `setCancelled(false)` **and** changes `clickOrigin.currentItem` gets that item written back to the real
-  slot. Vanilla pickup/swap/quick-move semantics are deliberately not emulated.
+  clicks: the click is delivered as an entity-container click, and whatever `clickOrigin.currentItem` holds
+  when the handler returns is written back to the real slot — **unless the handler cancels the click**. Like
+  the Bukkit backend, the click context starts *uncancelled*, so the write-back is opt-out, not opt-in. For a
+  handler that leaves `currentItem` alone it is a no-op; a handler that changes it for display purposes only
+  must call `setCancelled(true)`. Vanilla pickup/swap/quick-move semantics are deliberately not emulated.
 - **Drag, double-click, the drop key and unknown click modes are denied.** They are cancelled and answered
   with a full resync; no view callback runs for them.
 - **Outside clicks are routed.** The protocol has two wire forms for them, and both are accepted on a negative
@@ -84,8 +86,15 @@ Startup log lines to look for:
 - **`RenderContext#getInventory()` throws** `UnsupportedOperationException` in packet mode. Probe with
   `RenderContext#isBackedByRealInventory()` first.
 - **`SlotClickContext#getClickOrigin()` returns a synthesized `InventoryClickEvent`.** Item access,
-  cancellation, slot, slot type, action, hotbar button and click type are served from the packet click. The
-  inherited `getInventory()`, `getCursor()` and `setCursor(...)` are left intact so existing plugins keep
+  cancellation, raw slot, slot, slot type, action, hotbar button, click type and the clicked inventory are
+  served from the packet click, with Bukkit's own semantics: `getSlot()` is the index *inside* the clicked
+  inventory (so `player.getInventory().getItem(event.getSlot())` works for a bottom click), while
+  `getRawSlot()` stays view-wide. `getClickedInventory()` returns the viewer's inventory for a bottom click
+  and `null` for a top one — the top rows have no Bukkit inventory behind them, which is the entire point of
+  the backend, so a consumer that treats `null` as "outside" will read a top click as an outside click.
+  Use `SlotClickContext#isOutsideClick()` to tell them apart.
+
+  The inherited `getInventory()`, `getCursor()` and `setCursor(...)` are left intact so existing plugins keep
   compiling and running, but they resolve against the player's *own* inventory view. Reading them is harmless;
   writing through them reaches real server-side state and must not be done from a packet GUI handler.
 
@@ -124,7 +133,7 @@ than by watching the screen.
 | Cursor ghost-item correction | No item sticks to the cursor after any click | | |
 | Bottom inventory visual correctness | The viewer's own items render correctly and snap back when clicked | | |
 | No GUI display items in real server inventory contents | `/invsee` or an inventory dump shows no GUI icons in any real inventory | | |
-| Window id collision | Opening a GUI while a real chest is open closes the chest and never reuses its window id | | |
+| Window id collision | Opening a GUI while a real chest is open closes the chest and never reuses its window id | | Range guard unit-tested (ids 101–127 vs vanilla's 1–100); end-to-end path not run |
 | World change / respawn | Session is finalized, no stale viewer keeps receiving GUI packets | | |
 
 The rows marked **Changed** deviate from the original AGENTS.md expectation. Those click modes are deliberately
@@ -138,8 +147,9 @@ The empty rows have not been exercised. Two of them are worth clearing before th
 - **No GUI display items in real server inventory contents.** This is the claim the whole backend exists to
   make, and it is the one row nobody has checked. Open a GUI, then have a second player or a console command
   dump the viewer's inventory and confirm no GUI icon appears in it.
-- **Window id collision.** The guard in `PacketGuiWindowIds` is unit-tested, but the end-to-end path — open a
-  real chest, then open a GUI — has only been reasoned about, never run.
+- **Window id collision.** `PacketGuiWindowIds` now allocates outside vanilla's range and that is unit-tested,
+  so the collision class is closed by construction. The end-to-end path — open a real chest, then open a GUI —
+  has still only been reasoned about, never run.
 
 The remaining gaps are the denial modes (drag, drop key, offhand swap, number key), lifecycle cleanup on quit
 and world change, and cursor correction. Each is a single deliberate action on a server with
@@ -155,9 +165,21 @@ contents. The bottom rows are read live from the viewer's Bukkit inventory and s
 That last point matters for surf-api's PacketLore: because the packets travel the server's normal outbound
 path, an enchanted item in the viewer's inventory shows its enchantment lore inside a packet GUI exactly as it
 does anywhere else, decorated once. The backend deliberately keeps **no** mirror of the viewer's items — items
-captured from already-intercepted outbound packets would be decorated a second time when resent. The only
-packet-side viewer state is `PacketViewerWindowTracker`, which remembers the id of the real container window so
-a fake window id never collides with it.
+captured from already-intercepted outbound packets would be decorated a second time when resent.
+
+The only packet-side viewer state is `PacketViewerWindowTracker`, which remembers the id of the real container
+window the viewer has open.
+
+## Window ids
+
+The client tells windows apart by id alone, so a fake window that shares an id with a real container makes the
+client apply that container's updates to the GUI screen and the backend route the player's clicks into the
+wrong pipeline. Fake ids are therefore allocated from **101–127**, a range vanilla never uses:
+`ServerPlayer#nextContainerCounter()` is `containerCounter % 100 + 1`, i.e. 1–100. 127 is the upper bound so
+the id still fits in a signed byte, which older protocol versions require.
+
+`PacketViewerWindowTracker` is skipped on top of that. Against vanilla that is redundant; it still matters
+against another plugin that opens its own fake window in the same range.
 
 ## Scheduling
 
@@ -170,6 +192,11 @@ publishes the session before rendering it.
 If the scheduler refuses a task, the viewer is gone: the session is discarded rather than run on the wrong
 thread. That matters for the next-tick path in particular, because a dropped render task would otherwise leave
 the session's render request latched and swallow every later one.
+
+Discarding a session is logged at `WARNING` and detaches the viewer from the view, but does **not** run the
+CLOSE pipeline — that executes developer code, and this path exists precisely because nothing will accept work
+for that viewer any more. A `Discarded the packet GUI session of …` line therefore means `onClose` did not run
+for that viewer.
 
 ## Build note
 
