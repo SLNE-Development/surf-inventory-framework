@@ -1274,10 +1274,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..fefbba64f8ebb494f7258ee62c7e8aa6c434427f
+index 0000000000000000000000000000000000000000..9caa85bcb6bb70bc27d522fdefd5c4df750d19df
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1420 @@
+@@ -0,0 +1,1467 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1452,7 +1452,12 @@ index 0000000000000000000000000000000000000000..fefbba64f8ebb494f7258ee62c7e8aa6
 +                            + "Native outbound sender is active for Minecraft "
 +                            + nativeSender.minecraftVersion()
 +                            + ". This is the recommended mode for preventing GUI item duplication.");
-+        } catch (final RuntimeException exception) {
++        } catch (final RuntimeException | LinkageError exception) {
++            // LinkageError as well: the presence probe in GuiBackendFactory uses Class.forName without
++            // initializing, so PacketEvents can be findable and still fail to link or initialize here. That
++            // surfaces as NoClassDefFoundError or ExceptionInInitializerError, which are Errors - letting them
++            // escape would take down the owning plugin's enable, and this backend's whole contract is to fall
++            // back to Bukkit inventories instead. Not Throwable: OutOfMemoryError must still propagate.
 +            available = false;
 +            owner.getLogger()
 +                    .log(
@@ -1471,7 +1476,9 @@ index 0000000000000000000000000000000000000000..fefbba64f8ebb494f7258ee62c7e8aa6
 +        if (listener != null) {
 +            try {
 +                PacketEvents.getAPI().getEventManager().unregisterListener(listener);
-+            } catch (final RuntimeException exception) {
++            } catch (final RuntimeException | LinkageError exception) {
++                // Runs during plugin disable, where PacketEvents may already be unloading. Failing here must
++                // not stop the rest of the teardown below.
 +                owner.getLogger().log(Level.WARNING, "Failed to unregister packet GUI listener", exception);
 +            } finally {
 +                listener = null;
@@ -1940,9 +1947,7 @@ index 0000000000000000000000000000000000000000..fefbba64f8ebb494f7258ee62c7e8aa6
 +                            cloneItem(playerInventoryItem(session.player(), playerSlots.get(index))));
 +                }
 +            } catch (final RuntimeException exception) {
-+                owner.getLogger()
-+                        .log(Level.WARNING, "Failed to mirror the player inventory into a packet GUI", exception);
-+                closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
++                handleSendFailure(session, "Failed to mirror the player inventory into a packet GUI", exception);
 +            }
 +        });
 +    }
@@ -1972,9 +1977,7 @@ index 0000000000000000000000000000000000000000..fefbba64f8ebb494f7258ee62c7e8aa6
 +                        guiSlot,
 +                        cloneItem(playerInventoryItem(session.player(), playerWindowSlot)));
 +            } catch (final RuntimeException exception) {
-+                owner.getLogger()
-+                        .log(Level.WARNING, "Failed to mirror a player inventory slot into a packet GUI", exception);
-+                closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
++                handleSendFailure(session, "Failed to mirror a player inventory slot into a packet GUI", exception);
 +            }
 +        });
 +    }
@@ -2383,8 +2386,52 @@ index 0000000000000000000000000000000000000000..fefbba64f8ebb494f7258ee62c7e8aa6
 +                packet.send(sender, session.player());
 +            }
 +        } catch (final RuntimeException exception) {
-+            owner.getLogger().log(Level.WARNING, "Failed to send native packet GUI render", exception);
-+            runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
++            handleSendFailure(session, "Failed to send native packet GUI render", exception);
++        }
++    }
++
++    /**
++     * Reacts to a failure while sending to a viewer.
++     *
++     * <p>A packet that failed to build takes its session down and nothing more. A broken outbound chain takes
++     * packet mode down with it: the alternative is failing every GUI open for the rest of the server's life,
++     * where the documented behaviour is to fall back to real Bukkit inventories. The send path is the one part
++     * of the native sender that cannot be fully verified at startup, because it needs a live player.
++     */
++    private void handleSendFailure(PacketGuiSession session, String message, RuntimeException exception) {
++        if (exception instanceof PacketGuiNativeOutboundSender.SendPathUnusableException) {
++            disablePacketMode(exception);
++            return;
++        }
++
++        owner.getLogger().log(Level.WARNING, message, exception);
++        runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
++    }
++
++    /**
++     * Turns packet mode off for the rest of this server's life and hands every open session back to real
++     * inventories. New containers route to {@link BukkitGuiBackend} through the {@code available} check in
++     * {@link #createContainer}.
++     */
++    private void disablePacketMode(Throwable failure) {
++        if (!available) {
++            return;
++        }
++        available = false;
++
++        owner.getLogger()
++                .log(
++                        Level.WARNING,
++                        "[IF] GUI backend: disabling packet mode after the native outbound path proved "
++                                + "unusable. Inventory GUIs fall back to real Bukkit inventory items.",
++                        failure);
++
++        for (final PacketGuiSession open : List.copyOf(sessions.values())) {
++            try {
++                runOnPlayer(open, () -> closeSession(open, false, CLOSE_ORIGIN_SERVER, true, true));
++            } catch (final RuntimeException ignored) {
++                // Best effort: one viewer failing to close must not stop the others from being released.
++            }
 +        }
 +    }
 +
@@ -2950,10 +2997,10 @@ index 0000000000000000000000000000000000000000..0da7f70a1658150890b2500d7251bef4
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..e5116d3176619755c4c961b0e51175e37136b185
+index 0000000000000000000000000000000000000000..e4bea5df501492e2bdb4e4e7f9235afa21a3627d
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,507 @@
+@@ -0,0 +1,564 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
@@ -3052,13 +3099,23 @@ index 0000000000000000000000000000000000000000..e5116d3176619755c4c961b0e51175e3
 +        try {
 +            final PacketGuiNativeOutboundSender sender = new PacketGuiNativeOutboundSender();
 +            sender.selfCheck();
++            final String unverifiedSendPath = sender.probeSendPath();
 +            return InitializationResult.available(
 +                    sender,
 +                    minecraftVersion,
 +                    bukkitVersion,
 +                    serverPackage,
-+                    "Native packet GUI outbound sender initialized for Minecraft " + minecraftVersion + ".");
-+        } catch (final RuntimeException exception) {
++                    "Native packet GUI outbound sender initialized for Minecraft " + minecraftVersion + "."
++                            + (unverifiedSendPath == null
++                                    ? ""
++                                    : " Send path not fully verified: " + unverifiedSendPath + "."));
++        } catch (final RuntimeException | LinkageError exception) {
++            // LinkageError, not just RuntimeException: resolving the server's packet classes runs their static
++            // initializers, and a class that is present but cannot be linked - a renamed field, a changed
++            // signature, a failed <clinit> - raises NoClassDefFoundError, NoSuchMethodError or
++            // ExceptionInInitializerError. Those are Errors, and letting them escape would abort the owning
++            // plugin's enable instead of falling back to Bukkit inventories. Deliberately not Throwable, so a
++            // genuinely fatal condition such as OutOfMemoryError still propagates.
 +            return InitializationResult.unavailable(
 +                    minecraftVersion,
 +                    bukkitVersion,
@@ -3216,7 +3273,26 @@ index 0000000000000000000000000000000000000000..e5116d3176619755c4c961b0e51175e3
 +        try {
 +            send.invoke(connection, packet);
 +        } catch (final ReflectiveOperationException exception) {
-+            throw new IllegalStateException("Failed to send native packet GUI item packet", exception);
++            throw new SendPathUnusableException("Failed to send native packet GUI item packet", exception);
++        }
++    }
++
++    /**
++     * Thrown when the outbound machinery itself cannot be used - the player handle, the connection or the send
++     * method could not be reached - as opposed to a single packet failing to build.
++     *
++     * <p>The distinction is what lets the backend turn packet mode off and fall back to Bukkit inventories,
++     * rather than failing every GUI open for the rest of the server's life. This is the one part of the native
++     * sender that {@link #selfCheck()} cannot fully verify, because it needs a live player.
++     */
++    static final class SendPathUnusableException extends IllegalStateException {
++
++        SendPathUnusableException(String message) {
++            super(message);
++        }
++
++        SendPathUnusableException(String message, Throwable cause) {
++            super(message, cause);
 +        }
 +    }
 +
@@ -3224,7 +3300,7 @@ index 0000000000000000000000000000000000000000..e5116d3176619755c4c961b0e51175e3
 +        try {
 +            return getHandle.invoke(player);
 +        } catch (final ReflectiveOperationException exception) {
-+            throw new IllegalStateException("Failed to access native player handle", exception);
++            throw new SendPathUnusableException("Failed to access native player handle", exception);
 +        }
 +    }
 +
@@ -3266,7 +3342,7 @@ index 0000000000000000000000000000000000000000..e5116d3176619755c4c961b0e51175e3
 +            type = type.getSuperclass();
 +        }
 +
-+        throw new IllegalStateException("Failed to discover native player connection");
++        throw new SendPathUnusableException("Failed to discover native player connection");
 +    }
 +
 +    private Method sendMethod(Class<?> connectionClass) {
@@ -3275,7 +3351,7 @@ index 0000000000000000000000000000000000000000..e5116d3176619755c4c961b0e51175e3
 +            // instead of one entry per concrete packet class.
 +            final Method method = findSendMethod(type, packetClass);
 +            if (method == null) {
-+                throw new IllegalStateException("Failed to find native player connection send method");
++                throw new SendPathUnusableException("Failed to find native player connection send method");
 +            }
 +            return method;
 +        });
@@ -3297,6 +3373,34 @@ index 0000000000000000000000000000000000000000..e5116d3176619755c4c961b0e51175e3
 +                return method;
 +            }
 +            type = type.getSuperclass();
++        }
++
++        return null;
++    }
++
++    /**
++     * Resolves the outbound chain as far as it can be resolved without a player.
++     *
++     * <p>Deliberately tolerant. An obfuscated runtime may name the field differently and still work, because
++     * {@link #connection(Object)} falls back to scanning fields on first use; rejecting the server here would
++     * trade a working setup for the Bukkit fallback. So an unresolved chain is reported, not treated as fatal.
++     *
++     * @return {@code null} when the whole chain resolved, otherwise what stayed unverified.
++     */
++    private String probeSendPath() {
++        final Class<?> nativePlayerClass = getHandle.getReturnType();
++
++        final Field connectionField;
++        try {
++            connectionField = field(nativePlayerClass, "connection");
++        } catch (final NoSuchFieldException ignored) {
++            return "the connection field of " + nativePlayerClass.getName()
++                    + " could not be resolved by name and will be discovered on the first GUI open";
++        }
++
++        if (findSendMethod(connectionField.getType(), packetClass) == null) {
++            return "no packet send method was found on " + connectionField.getType().getName()
++                    + "; it will be resolved on the first GUI open";
 +        }
 +
 +        return null;

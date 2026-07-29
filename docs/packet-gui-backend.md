@@ -54,7 +54,16 @@ and the ordering hazard does not apply to it — the content packets that follow
 connection, so they can never overtake a direct channel write.
 
 Only if all three succeed is packet mode enabled. Any mismatch produces a single warning naming the detected
-Minecraft version, and every GUI silently keeps using real Bukkit inventory items.
+Minecraft version, and every GUI silently keeps using real Bukkit inventory items. That includes mismatches
+that surface as `Error` rather than exception — a class that is present but cannot be linked or initialized —
+because those would otherwise abort the owning plugin's enable instead of falling back.
+
+One hop cannot be fully verified at startup: reaching the player's connection needs a live player. The probe
+resolves as much of it as it can statically (the native player class, its `connection` field, the send method
+on that field's type) and reports what it could not, but it deliberately does **not** refuse a server over it —
+an obfuscated runtime may name the field differently and still work, because the connection is discovered by
+scanning fields on first use. If the chain then turns out to be unusable, the **first** failure disables packet
+mode, releases every open session back to real inventories, and logs one warning. It does not retry per GUI.
 
 Startup log lines to look for:
 
