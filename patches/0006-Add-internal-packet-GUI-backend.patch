@@ -99,22 +99,29 @@ index e050121d60d533fd55677306fc3d0ea06b011fd8..4b9a363340f204570bcdac70319e1fa7
  
          return value;
 diff --git a/inventory-framework-platform-bukkit/build.gradle.kts b/inventory-framework-platform-bukkit/build.gradle.kts
-index 6a29127fffd904f31720719a40c8f61bf4c1ae05..82ffa251b58814e38dd326d136370e5d064bcbde 100644
+index 6a29127fffd904f31720719a40c8f61bf4c1ae05..962b7f2e899084e96809ca6e66885042da047083 100644
 --- a/inventory-framework-platform-bukkit/build.gradle.kts
 +++ b/inventory-framework-platform-bukkit/build.gradle.kts
-@@ -13,8 +13,11 @@ dependencies {
+@@ -13,8 +13,16 @@ dependencies {
      api(projects.inventoryFrameworkPlatform)
      runtimeOnly(projects.inventoryFrameworkAnvilInput)
      compileOnly(libs.spigot)
+-    testCompileOnly(libs.spigot)
+-    testRuntimeOnly(libs.spigot)
 +    compileOnly(libs.packetevents.spigot)
-     testCompileOnly(libs.spigot)
-     testRuntimeOnly(libs.spigot)
++    // Production compiles against the Spigot API so the artifact stays usable on a plain Spigot server, but
++    // the packet backend reaches Paper-only methods (ItemMeta#displayName()) reflectively. On a Spigot test
++    // classpath those methods do not exist, the Method handles resolve to null and the whole normalization
++    // degrades to a silent no-op - a test could not tell that apart from working. Paper is a superset of the
++    // Spigot API, so testing against it costs nothing and makes that path assertable.
++    testCompileOnly(libs.paperSpigot)
++    testRuntimeOnly(libs.paperSpigot)
 +    testCompileOnly(libs.packetevents.spigot)
 +    testRuntimeOnly(libs.packetevents.spigot)
      testImplementation(projects.inventoryFrameworkApi)
      testImplementation(projects.inventoryFrameworkTest)
      implementation(libs.folialib)
-@@ -39,5 +42,6 @@ bukkit {
+@@ -39,5 +47,6 @@ bukkit {
      website = "https://github.com/DevNatan/inventory-framework"
      apiVersion = "1.13"
      authors = listOf("SaiintBrisson", "DevNatan", "sasuked")
@@ -413,10 +420,10 @@ index d73ddb29859761e6505b001fb4d303f953cb99e3..686664b4211880e0dc7651cebda4e66c
  import org.jetbrains.annotations.UnmodifiableView;
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..589e7959a09285b6eac44b6af28a88f9b61e361a
+index 0000000000000000000000000000000000000000..f39f3bb5896337702b2fe6a12f39e985871df13f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickEvent.java
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,151 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -535,14 +542,37 @@ index 0000000000000000000000000000000000000000..589e7959a09285b6eac44b6af28a88f9
 +    // real server-side state and must not be used from a packet GUI handler; see the note on
 +    // SlotClickContext#getClickOrigin().
 +
++    // InventoryInteractEvent defines cancellation and result in terms of each other, and its javadoc calls
++    // setResult(...) the preferred way to stop a click. Routing only setCancelled would leave setResult(DENY)
++    // silently ineffective - the click would be applied anyway - so all four accessors are overridden together
++    // and the packet context is the single source of truth for "denied". The inherited result field is still
++    // written, so the ALLOW/DEFAULT distinction a consumer set survives being read back.
++
++    @Override
++    public @NotNull Result getResult() {
++        if (context.isCancelled()) {
++            return Result.DENY;
++        }
++
++        // A DENY left in the inherited field after the context was allowed again would contradict the context.
++        final Result result = super.getResult();
++        return result == Result.DENY ? Result.ALLOW : result;
++    }
++
++    @Override
++    public void setResult(@NotNull Result newResult) {
++        super.setResult(newResult);
++        context.setCancelled(newResult == Result.DENY);
++    }
++
 +    @Override
 +    public boolean isCancelled() {
-+        return context.isCancelled();
++        return getResult() == Result.DENY;
 +    }
 +
 +    @Override
 +    public void setCancelled(boolean cancel) {
-+        context.setCancelled(cancel);
++        setResult(cancel ? Result.DENY : Result.ALLOW);
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
@@ -3174,12 +3204,125 @@ index 0000000000000000000000000000000000000000..3b94afd49d429b52d37f2a8a89e97dd7
 +                + '}';
 +    }
 +}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFields.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFields.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c073975dea999faeeaca036777f82d76865d40fa
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFields.java
+@@ -0,0 +1,107 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.lang.reflect.Field;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.ConcurrentMap;
++import java.util.function.Predicate;
++
++/**
++ * Finds the field that holds a native player's connection, and remembers it per handle class.
++ *
++ * <p>The conventional name is only a fast path. Whether a field is <em>the</em> connection is decided by
++ * whether the object it holds can actually send a packet, which is the caller's test to make - this class only
++ * knows that a field has to pass it before it is trusted or cached.
++ *
++ * <p>That order matters more than it looks. A wrong object here does not cause a wrong item somewhere: the
++ * send fails, the sender reports its own machinery as unusable, and the backend turns packet mode off for the
++ * whole server. Caching a field before proving it dereferences would make that permanent.
++ */
++final class PacketGuiConnectionFields {
++
++    private static final String CONVENTIONAL_NAME = "connection";
++
++    private final ConcurrentMap<Class<?>, Field> cache = new ConcurrentHashMap<>();
++    private final Predicate<Object> usable;
++
++    PacketGuiConnectionFields(Predicate<Object> usable) {
++        this.usable = usable;
++    }
++
++    /**
++     * @throws PacketGuiNativeOutboundSender.SendPathUnusableException if no field of the handle holds something
++     *     that can send.
++     */
++    Object resolve(Object handle) {
++        final Class<?> handleClass = handle.getClass();
++
++        final Field cached = cache.get(handleClass);
++        if (cached != null) {
++            // Not re-validated: this field already passed, and the check costs a method lookup per packet.
++            final Object connection = read(cached, handle);
++            if (connection != null) {
++                return connection;
++            }
++
++            cache.remove(handleClass, cached);
++        }
++
++        final Field named = field(handleClass, CONVENTIONAL_NAME);
++        if (named != null) {
++            final Object connection = read(named, handle);
++            if (connection != null && usable.test(connection)) {
++                cache.put(handleClass, named);
++                return connection;
++            }
++        }
++
++        return discover(handle, handleClass);
++    }
++
++    private Object discover(Object handle, Class<?> handleClass) {
++        Class<?> type = handleClass;
++        while (type != null) {
++            for (final Field field : type.getDeclaredFields()) {
++                final Object value = read(field, handle);
++                if (value != null && usable.test(value)) {
++                    // The scan walks every declared field of the whole hierarchy and runs per packet, so what
++                    // it finds has to be remembered.
++                    cache.put(handleClass, field);
++                    return value;
++                }
++            }
++            type = type.getSuperclass();
++        }
++
++        throw new PacketGuiNativeOutboundSender.SendPathUnusableException(
++                "Failed to discover native player connection");
++    }
++
++    /**
++     * Reads a field, or reports {@code null} when it cannot be read at all.
++     *
++     * <p>Deliberately tolerant, including of the unchecked {@code InaccessibleObjectException} a module system
++     * can raise: an unreadable field is simply not the one being looked for, and the scan has to be able to
++     * walk past it.
++     */
++    private static Object read(Field field, Object handle) {
++        try {
++            field.setAccessible(true);
++            return field.get(handle);
++        } catch (final ReflectiveOperationException | RuntimeException ignored) {
++            return null;
++        }
++    }
++
++    private static Field field(Class<?> type, String name) {
++        Class<?> current = type;
++        while (current != null) {
++            try {
++                return current.getDeclaredField(name);
++            } catch (final NoSuchFieldException ignored) {
++                current = current.getSuperclass();
++            }
++        }
++
++        return null;
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a1d1a464f28c1199e54f0609735cb7f218953fb
+index 0000000000000000000000000000000000000000..08b3d13cb9ed55cdc5ae754a4868bf8c844ad233
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiNativeOutboundSender.java
-@@ -0,0 +1,572 @@
+@@ -0,0 +1,535 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.lang.reflect.Constructor;
@@ -3218,12 +3361,16 @@ index 0000000000000000000000000000000000000000..5a1d1a464f28c1199e54f0609735cb7f
 +    private final Constructor<?> setCursorItemConstructor;
 +    private final Constructor<?> setPlayerInventoryConstructor;
 +    private final Constructor<?> containerCloseConstructor;
-+    private final ConcurrentMap<Class<?>, Field> connectionFields = new ConcurrentHashMap<>();
++    private final PacketGuiConnectionFields connectionFields;
 +    private final ConcurrentMap<Class<?>, Method> sendMethods = new ConcurrentHashMap<>();
 +
 +    private PacketGuiNativeOutboundSender() {
 +        try {
 +            this.packetClass = Class.forName("net.minecraft.network.protocol.Packet");
++            // Assigned here rather than at the field, because the predicate closes over packetClass and a
++            // field initializer would run before the constructor could set it.
++            this.connectionFields =
++                    new PacketGuiConnectionFields(value -> findSendMethod(value.getClass(), packetClass) != null);
 +            this.nmsItemStackClass = Class.forName("net.minecraft.world.item.ItemStack");
 +            this.emptyItemStack = staticField(nmsItemStackClass, "EMPTY").get(null);
 +            this.asNmsCopy = craftItemStackClass().getMethod("asNMSCopy", ItemStack.class);
@@ -3448,7 +3595,7 @@ index 0000000000000000000000000000000000000000..5a1d1a464f28c1199e54f0609735cb7f
 +
 +    private void send(Player player, Object packet) {
 +        final Object handle = handle(player);
-+        final Object connection = connection(handle);
++        final Object connection = connectionFields.resolve(handle);
 +        final Method send = sendMethod(connection.getClass());
 +        try {
 +            send.invoke(connection, packet);
@@ -3489,47 +3636,6 @@ index 0000000000000000000000000000000000000000..5a1d1a464f28c1199e54f0609735cb7f
 +        } catch (final ReflectiveOperationException exception) {
 +            throw new SendPathUnusableException("Failed to access native player handle", exception);
 +        }
-+    }
-+
-+    private Object connection(Object handle) {
-+        final Class<?> handleClass = handle.getClass();
-+        final Field cachedField = connectionFields.get(handleClass);
-+        if (cachedField != null) {
-+            try {
-+                return cachedField.get(handle);
-+            } catch (final ReflectiveOperationException exception) {
-+                connectionFields.remove(handleClass, cachedField);
-+            }
-+        }
-+
-+        try {
-+            final Field connection = field(handleClass, "connection");
-+            connectionFields.putIfAbsent(handleClass, connection);
-+            return connection.get(handle);
-+        } catch (final ReflectiveOperationException ignored) {
-+            return discoverConnection(handle);
-+        }
-+    }
-+
-+    private Object discoverConnection(Object handle) {
-+        Class<?> type = handle.getClass();
-+        while (type != null) {
-+            for (final Field field : type.getDeclaredFields()) {
-+                try {
-+                    field.setAccessible(true);
-+                    final Object value = field.get(handle);
-+                    if (value != null && findSendMethod(value.getClass(), packetClass) != null) {
-+                        connectionFields.putIfAbsent(handle.getClass(), field);
-+                        return value;
-+                    }
-+                } catch (final ReflectiveOperationException ignored) {
-+                    // Try the next field; this is a compatibility fallback for obfuscated runtimes.
-+                }
-+            }
-+            type = type.getSuperclass();
-+        }
-+
-+        throw new SendPathUnusableException("Failed to discover native player connection");
 +    }
 +
 +    private Method sendMethod(Class<?> connectionClass) {
@@ -4777,12 +4883,13 @@ index 0000000000000000000000000000000000000000..34a64a354009f8c34cd20f2eeaaa398c
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b1f73f28147bef735305a8fa43ed8c5a73648e2
+index 0000000000000000000000000000000000000000..1e8ce15851b2ca669a6a5b6e650bea50c4937351
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainer.java
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,314 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
++import java.util.List;
 +import java.util.Map;
 +import java.util.Objects;
 +import java.util.concurrent.ConcurrentHashMap;
@@ -4857,9 +4964,28 @@ index 0000000000000000000000000000000000000000..6b1f73f28147bef735305a8fa43ed8c5
 +        }
 +    }
 +
++    /**
++     * The title of this container as a whole, which is what {@code PlatformContext#getUpdatedTitle()} reports.
++     *
++     * <p>Reading the configured title here would ignore every {@code updateTitleForEveryone(...)} the view ever
++     * made, because those are recorded per viewer. The Bukkit container answers the same question from the
++     * live {@code InventoryView} of its first viewer, so this does the same and only falls back to the
++     * configured title when nobody is viewing.
++     */
 +    @Override
 +    public String getTitle() {
-+        return titleAsString(title);
++        return titleAsString(getRawTitle(representativeViewerId()));
++    }
++
++    /**
++     * The viewer whose title stands in for the whole container.
++     *
++     * <p>Per-viewer titles can differ, and this accessor cannot express that. Picking the first viewer matches
++     * the Bukkit container; {@link #getTitle(Viewer)} is the accessor that is exact.
++     */
++    private String representativeViewerId() {
++        final List<Viewer> viewers = context.getViewers();
++        return viewers == null || viewers.isEmpty() ? null : viewers.get(0).getId();
 +    }
 +
 +    @Override
@@ -4978,16 +5104,26 @@ index 0000000000000000000000000000000000000000..6b1f73f28147bef735305a8fa43ed8c5
 +
 +    @Override
 +    public void changeTitle(@Nullable Object title, @NotNull Viewer target) {
-+        final Object previous = getRawTitle(target.getId());
-+        if (title == null) {
-+            viewerTitles.remove(target.getId());
-+        } else {
-+            viewerTitles.put(target.getId(), title);
-+        }
-+
-+        if (!Objects.equals(previous, getRawTitle(target.getId()))) {
++        if (applyTitle(target.getId(), title)) {
 +            backend.requestReopen(this, (BukkitViewer) target);
 +        }
++    }
++
++    /**
++     * Records the title a single viewer should see and reports whether that actually changed anything.
++     *
++     * <p>Split out from {@link #changeTitle} so the title state can be exercised without a backend to send the
++     * resulting reopen to.
++     */
++    boolean applyTitle(@NotNull String viewerId, @Nullable Object title) {
++        final Object previous = getRawTitle(viewerId);
++        if (title == null) {
++            viewerTitles.remove(viewerId);
++        } else {
++            viewerTitles.put(viewerId, title);
++        }
++
++        return !Objects.equals(previous, getRawTitle(viewerId));
 +    }
 +
 +    @Override
@@ -5181,6 +5317,138 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
  
          final Component component = context.getComponent();
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickEventTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickEventTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1f7ddd7930528444b7446c00952d4f88d51502e1
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickEventTest.java
+@@ -0,0 +1,126 @@
++package me.devnatan.inventoryframework.context;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import me.devnatan.inventoryframework.ViewContainer;
++import me.devnatan.inventoryframework.Viewer;
++import org.bukkit.entity.Player;
++import org.bukkit.event.Event;
++import org.bukkit.event.inventory.InventoryAction;
++import org.bukkit.event.inventory.InventoryType;
++import org.bukkit.inventory.InventoryView;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins the {@code isCancelled()} / {@code getResult()} invariant of the synthetic click event.
++ *
++ * <p>{@code InventoryInteractEvent} defines the two in terms of each other - {@code isCancelled()} is
++ * {@code getResult() == DENY} - and its own javadoc calls {@code setResult(...)} the <em>preferred</em> way to
++ * stop a click. A consumer moved over from the Bukkit backend may well use it. If only the cancellation half
++ * is routed to the packet context, {@code setResult(DENY)} is silently ignored and the click is applied
++ * anyway, which is the worst possible direction for that failure to point.
++ */
++class PacketSlotClickEventTest {
++
++    /**
++     * The dangerous direction: a handler denies the click the way Bukkit recommends, and the backend - which
++     * only ever reads the context - has to see it.
++     */
++    @Test
++    void routesADeniedResultToTheContextThatDecidesTheClick() {
++        final Fixture fixture = newEvent();
++
++        fixture.event.setResult(Event.Result.DENY);
++
++        assertTrue(fixture.context.isCancelled(), "setResult(DENY) must reach the context the backend reads");
++        assertTrue(fixture.event.isCancelled());
++    }
++
++    /** The reporting direction: whoever cancelled the click, {@code getResult()} has to agree. */
++    @Test
++    void reportsACancelledClickAsDenied() {
++        final Fixture fixture = newEvent();
++
++        fixture.event.setCancelled(true);
++
++        assertEquals(Event.Result.DENY, fixture.event.getResult());
++        assertTrue(fixture.context.isCancelled());
++    }
++
++    /** A cancellation the backend applied itself must be visible through the event too. */
++    @Test
++    void reportsACancellationThatCameFromTheContext() {
++        final Fixture fixture = newEvent();
++
++        fixture.context.setCancelled(true);
++
++        assertEquals(Event.Result.DENY, fixture.event.getResult());
++        assertTrue(fixture.event.isCancelled());
++    }
++
++    /** Allowing again must not leave a stale {@code DENY} behind. */
++    @Test
++    void clearsTheDenialWhenTheClickIsAllowedAgain() {
++        final Fixture fixture = newEvent();
++        fixture.event.setResult(Event.Result.DENY);
++
++        fixture.event.setResult(Event.Result.ALLOW);
++
++        assertFalse(fixture.context.isCancelled());
++        assertEquals(Event.Result.ALLOW, fixture.event.getResult());
++        assertFalse(fixture.event.isCancelled());
++    }
++
++    /** A fresh event carries Bukkit's own default, so a consumer that reads it before deciding sees no change. */
++    @Test
++    void startsOutWithTheDefaultResultLikeARealClickEvent() {
++        final Fixture fixture = newEvent();
++
++        assertEquals(Event.Result.DEFAULT, fixture.event.getResult());
++        assertFalse(fixture.event.isCancelled());
++    }
++
++    private static Fixture newEvent() {
++        final InventoryView view = mock(InventoryView.class);
++        when(view.convertSlot(anyInt())).thenReturn(0);
++
++        final Player player = mock(Player.class);
++        when(player.getOpenInventory()).thenReturn(view);
++
++        final SlotClickOrigin origin = mock(SlotClickOrigin.class);
++        when(origin.getPlayer()).thenReturn(player);
++        when(origin.getClickIdentifier()).thenReturn("LEFT");
++        when(origin.getSlotType()).thenReturn(InventoryType.SlotType.CONTAINER);
++        when(origin.getAction()).thenReturn(InventoryAction.PICKUP_ALL);
++        when(origin.getRawSlot()).thenReturn(0);
++
++        // A real context, not a mock: isCancelled/setCancelled are final on SlotClickContext, and the point of
++        // the assertion is that the cancellation lands in the state the backend actually consults.
++        final SlotClickContext context = new SlotClickContext(
++                0,
++                mock(IFRenderContext.class),
++                mock(Viewer.class),
++                mock(ViewContainer.class),
++                null,
++                (Object) origin,
++                false);
++
++        return new Fixture(PacketSlotClickEvent.create(context, origin), context);
++    }
++
++    private static final class Fixture {
++
++        private final PacketSlotClickEvent event;
++        private final SlotClickContext context;
++
++        private Fixture(PacketSlotClickEvent event, SlotClickContext context) {
++            this.event = event;
++            this.context = context;
++        }
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..395334ded24259b90dca028b8199e2f26a733e63
@@ -5418,6 +5686,116 @@ index 0000000000000000000000000000000000000000..395334ded24259b90dca028b8199e2f2
 +                        "identifier '" + identifier + "' is not a Bukkit ClickType (" + type + "/" + button + ")");
 +            }
 +        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFieldsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFieldsTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..6dd7dbf5f4afe8afa8d0efa12c8cad01481e2638
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFieldsTest.java
+@@ -0,0 +1,104 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++import java.util.concurrent.atomic.AtomicInteger;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Covers how the native sender finds the connection field on a player handle.
++ *
++ * <p>The stakes are asymmetric. Handing back the wrong object does not produce a wrong item somewhere - the
++ * send that follows fails, the sender reports its own machinery as unusable, and the backend turns packet mode
++ * off for the entire server. So a field is only trusted once it has been shown to carry something that can
++ * actually send, and only then is it cached.
++ */
++class PacketGuiConnectionFieldsTest {
++
++    /** The fast path: on a Mojang-mapped server the field is simply called {@code connection}. */
++    @Test
++    void resolvesTheConventionallyNamedField() {
++        final ConventionalHandle handle = new ConventionalHandle();
++
++        assertSame(handle.connection, newFields(new AtomicInteger()).resolve(handle));
++    }
++
++    /**
++     * The name is a hint, not proof. A fork whose handle happens to carry an unrelated field called
++     * {@code connection} must not poison the send path.
++     */
++    @Test
++    void ignoresAFieldThatOnlySharesTheConventionalName() {
++        final MisnamedHandle handle = new MisnamedHandle();
++
++        assertSame(handle.link, newFields(new AtomicInteger()).resolve(handle));
++    }
++
++    /**
++     * The scan walks every declared field of the whole class hierarchy, and a resolve happens per packet, so
++     * the fallback has to be a one-off - not the steady state for every server whose handle does not use the
++     * conventional field name.
++     */
++    @Test
++    void cachesTheScannedFieldSoALaterCallDoesNotScanAgain() {
++        final AtomicInteger validations = new AtomicInteger();
++        final PacketGuiConnectionFields fields = newFields(validations);
++        final MisnamedHandle handle = new MisnamedHandle();
++
++        assertSame(handle.link, fields.resolve(handle));
++        final int afterFirst = validations.get();
++
++        assertSame(handle.link, fields.resolve(handle));
++        assertEquals(afterFirst, validations.get(), "a cached field must not be re-validated or re-scanned");
++    }
++
++    /** A cached field that stopped resolving has to be replaced, not kept and failed on forever. */
++    @Test
++    void reResolvesAfterTheCachedFieldStopsWorking() {
++        final PacketGuiConnectionFields fields = newFields(new AtomicInteger());
++        final ClearableHandle handle = new ClearableHandle();
++        assertSame(handle.connection, fields.resolve(handle));
++
++        handle.connection = null;
++        handle.spare = new Connection();
++
++        assertSame(handle.spare, fields.resolve(handle));
++    }
++
++    @Test
++    void failsWhenNoFieldHoldsAUsableConnection() {
++        assertThrows(
++                PacketGuiNativeOutboundSender.SendPathUnusableException.class,
++                () -> newFields(new AtomicInteger()).resolve(new EmptyHandle()));
++    }
++
++    private static PacketGuiConnectionFields newFields(AtomicInteger validations) {
++        return new PacketGuiConnectionFields(value -> {
++            validations.incrementAndGet();
++            return value instanceof Connection;
++        });
++    }
++
++    /** Stands in for the object a send method can be found on. */
++    private static final class Connection {}
++
++    private static final class ConventionalHandle {
++        private final Connection connection = new Connection();
++    }
++
++    private static final class MisnamedHandle {
++        private final String connection = "not a connection";
++        private final Connection link = new Connection();
++    }
++
++    private static final class ClearableHandle {
++        private Connection connection = new Connection();
++        private Connection spare;
++    }
++
++    private static final class EmptyHandle {
++        private final String name = "nothing usable here";
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java
@@ -5853,24 +6231,29 @@ index 0000000000000000000000000000000000000000..662e20f77195cda3a67631e605c9ec60
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverterTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverterTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..f98d396a699338ec2433ac0be110cb224cc4766e
+index 0000000000000000000000000000000000000000..432351fd7432f15b5c0e20e062c6154c3713bac1
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketItemConverterTest.java
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,155 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
 +import static org.junit.jupiter.api.Assertions.assertFalse;
 +import static org.junit.jupiter.api.Assertions.assertSame;
 +import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
 +import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
 +import static org.mockito.Mockito.when;
 +
 +import net.kyori.adventure.text.Component;
 +import net.kyori.adventure.text.format.TextDecoration;
 +import org.bukkit.Material;
 +import org.bukkit.inventory.ItemStack;
++import org.bukkit.inventory.meta.ItemMeta;
 +import org.junit.jupiter.api.Test;
++import org.mockito.ArgumentCaptor;
 +
 +/**
 + * Pins down exactly which names {@link PacketItemConverter#forceNonItalic} restyles.
@@ -5933,6 +6316,57 @@ index 0000000000000000000000000000000000000000..f98d396a699338ec2433ac0be110cb22
 +        assertEquals(TextDecoration.State.FALSE, normalized.decoration(TextDecoration.ITALIC));
 +    }
 +
++    /**
++     * Covers the reflective plumbing, not just the decision {@link PacketItemConverter#forceNonItalic} makes.
++     *
++     * <p>The converter reaches {@code ItemMeta#displayName()} through {@link java.lang.reflect.Method} handles
++     * resolved once in a static initializer, and every failure to resolve one degrades silently to "leave the
++     * item alone". A test classpath without those Paper methods therefore turns the entire normalization into a
++     * no-op that no assertion can distinguish from success - which is why this module's tests compile against
++     * the Paper API.
++     */
++    @Test
++    void writesTheNormalizedDisplayNameBackIntoTheCopiedMeta() {
++        final ItemMeta meta = mock(ItemMeta.class);
++        when(meta.displayName()).thenReturn(Component.text("Renamed Sword"));
++
++        final ItemStack copy = mock(ItemStack.class);
++        when(copy.getItemMeta()).thenReturn(meta);
++
++        final ItemStack original = mock(ItemStack.class);
++        when(original.clone()).thenReturn(copy);
++
++        final ItemStack normalized = PacketItemConverter.normalizedCopy(original);
++
++        assertSame(copy, normalized, "the original must never be mutated");
++
++        final ArgumentCaptor<Component> written = ArgumentCaptor.forClass(Component.class);
++        verify(meta).displayName(written.capture());
++        assertEquals(TextDecoration.State.FALSE, written.getValue().decoration(TextDecoration.ITALIC));
++        verify(copy).setItemMeta(meta);
++    }
++
++    /**
++     * The other half of the contract: an explicitly styled name must not cause a write at all. Without this,
++     * the test above would still pass if the converter rewrote every name it ever saw.
++     */
++    @Test
++    void leavesAnExplicitlyItalicDisplayNameUnwritten() {
++        final ItemMeta meta = mock(ItemMeta.class);
++        when(meta.displayName()).thenReturn(Component.text("Fancy Sword").decoration(TextDecoration.ITALIC, true));
++
++        final ItemStack copy = mock(ItemStack.class);
++        when(copy.getItemMeta()).thenReturn(meta);
++
++        final ItemStack original = mock(ItemStack.class);
++        when(original.clone()).thenReturn(copy);
++
++        PacketItemConverter.normalizedCopy(original);
++
++        verify(meta, never()).displayName(any(Component.class));
++        verify(copy, never()).setItemMeta(any(ItemMeta.class));
++    }
++
 +    @Test
 +    void treatsNullAirAndEmptyStacksAsEmpty() {
 +        assertTrue(PacketItemConverter.isEmpty(null));
@@ -5954,6 +6388,134 @@ index 0000000000000000000000000000000000000000..f98d396a699338ec2433ac0be110cb22
 +        when(item.getType()).thenReturn(type);
 +        when(item.getAmount()).thenReturn(amount);
 +        return item;
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainerTitleTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainerTitleTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d73854a7b3e930e25ff1380ac0dfccc630e2a189
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketViewContainerTitleTest.java
+@@ -0,0 +1,122 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.List;
++import me.devnatan.inventoryframework.ViewType;
++import me.devnatan.inventoryframework.Viewer;
++import me.devnatan.inventoryframework.context.IFRenderContext;
++import net.kyori.adventure.text.Component;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Covers what {@code ViewContainer#getTitle()} reports after a dynamic title change.
++ *
++ * <p>That method is not decoration: {@code PlatformContext#getUpdatedTitle()} is exactly this call, and
++ * {@code PlatformContext#getTitle()} is built on it. In the Bukkit backend it reads the live
++ * {@code InventoryView} title, so an {@code updateTitleForEveryone(...)} is immediately visible through it.
++ * The packet container keeps its titles itself, so it has to answer the same question from its own state
++ * instead of from the title it happened to be constructed with.
++ */
++class PacketViewContainerTitleTest {
++
++    @Test
++    void reportsTheConfiguredTitleWhileNothingHasChangedIt() {
++        final PacketViewContainer container = container("Shop", "viewer-1");
++
++        assertEquals("Shop", container.getTitle());
++    }
++
++    @Test
++    void reportsTheUpdatedTitleAfterAViewerTitleChange() {
++        final PacketViewContainer container = container("Shop", "viewer-1");
++
++        container.applyTitle("viewer-1", "Shop (page 2)");
++
++        assertEquals("Shop (page 2)", container.getTitle());
++    }
++
++    /** The title is an Adventure component far more often than a String, and it must not be dumped raw. */
++    @Test
++    void rendersAnUpdatedComponentTitleAsPlainText() {
++        final PacketViewContainer container = container("Shop", "viewer-1");
++
++        container.applyTitle("viewer-1", Component.text("Shop (page 2)"));
++
++        assertEquals("Shop (page 2)", container.getTitle());
++    }
++
++    @Test
++    void fallsBackToTheConfiguredTitleWhenTheChangeIsReset() {
++        final PacketViewContainer container = container("Shop", "viewer-1");
++        container.applyTitle("viewer-1", "Shop (page 2)");
++
++        container.applyTitle("viewer-1", null);
++
++        assertEquals("Shop", container.getTitle());
++    }
++
++    /**
++     * A per-viewer change must stay per-viewer. This is what stops the fix from being "write the change into
++     * the container-wide title", which would make one viewer's title bleed into everyone else's window.
++     */
++    @Test
++    void keepsAPerViewerChangeAwayFromTheOtherViewers() {
++        final PacketViewContainer container = container("Shop", "viewer-1", "viewer-2");
++        final Viewer other = viewer("viewer-2");
++
++        container.applyTitle("viewer-1", "Shop (page 2)");
++
++        assertEquals("Shop", container.getTitle(other));
++    }
++
++    /** No viewers, no per-viewer state to read - the configured title is all there is. */
++    @Test
++    void reportsTheConfiguredTitleWithoutViewers() {
++        final PacketViewContainer container = container("Shop");
++
++        assertEquals("Shop", container.getTitle());
++    }
++
++    /** A container without a configured title reports null so the context can fall back to the type default. */
++    @Test
++    void reportsNoTitleWhenNoneIsConfigured() {
++        final PacketViewContainer container = container(null, "viewer-1");
++
++        assertNull(container.getTitle());
++    }
++
++    @Test
++    void reportsAChangedTitleEvenWhenNoneWasConfigured() {
++        final PacketViewContainer container = container(null, "viewer-1");
++
++        container.applyTitle("viewer-1", "Shop");
++
++        assertEquals("Shop", container.getTitle());
++    }
++
++    private static PacketViewContainer container(Object title, String... viewerIds) {
++        final List<Viewer> viewers = viewerIds.length == 0
++                ? Collections.emptyList()
++                : Arrays.stream(viewerIds)
++                        .map(PacketViewContainerTitleTest::viewer)
++                        .collect(java.util.stream.Collectors.toList());
++
++        final IFRenderContext context = mock(IFRenderContext.class);
++        when(context.getViewers()).thenReturn(viewers);
++
++        // The backend is only reached to request a reopen, which applyTitle deliberately leaves to changeTitle.
++        return new PacketViewContainer(null, context, ViewType.CHEST, 27, title);
++    }
++
++    private static Viewer viewer(String id) {
++        final Viewer viewer = mock(Viewer.class);
++        when(viewer.getId()).thenReturn(id);
++        return viewer;
 +    }
 +}
 diff --git a/settings.gradle.kts b/settings.gradle.kts
