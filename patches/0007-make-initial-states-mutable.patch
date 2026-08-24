@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TheBjoRedCraft <red@slne.dev>
+Date: Sat, 22 Aug 2026 19:27:37 +0200
+Subject: [PATCH] make initial states mutable
+
+* replace the lazily computed backing value of initial data states with a mutable one on the first modification attempt instead of throwing IllegalStateModificationException
+
+diff --git a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/InitialDataStateValue.java b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/InitialDataStateValue.java
+index c20185927e8ceccd8bb25c2369ca10fa991b59e9..5361f48a0681803fa6644c22e09d5e77e956d056 100644
+--- a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/InitialDataStateValue.java
++++ b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/InitialDataStateValue.java
+@@ -44,7 +44,16 @@ public final class InitialDataStateValue extends AbstractStateValue {
+ 
+     @Override
+     public void set(Object value) {
+-        backingValue.set(value);
++        // surf start - make initial states mutable
++        if (backingValue instanceof MutableValue) {
++            backingValue.set(value);
++            return;
++        }
++
++        // The backing value is lazily computed from the context initial data and therefore immutable,
++        // so it's replaced by a mutable one on the first modification attempt.
++        backingValue = new MutableValue(getState(), value);
++        // surf end - make initial states mutable
+     }
+ 
+     public void reset() {
