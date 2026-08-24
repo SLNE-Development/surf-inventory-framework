@@ -96,34 +96,14 @@ index 161eb1a343cb2876fd0b413418254dba23028102..41bd0c254b0ce628224f0fc6be86552d
      }
  }
 \ No newline at end of file
-diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 02bc15cca1256e96938178a878dadf8b007333d8..89850fa8d67a4ff08fbe5997ab94625e50c0cf19 100644
---- a/gradle/libs.versions.toml
-+++ b/gradle/libs.versions.toml
-@@ -3,12 +3,12 @@ jetbrains-annotations = "26.0.2"
- # Do not update Spigot/Paper to 1.21, InventoryView changed from class to interface type
- # Dynamic Title Update feature throws IncompatibleClassChangeError due to that
- # Feel free to implement a workaround on InventoryUpdate.java if u need to use a 1.21+ specific API
--spigot = "1.20.6-R0.1-SNAPSHOT"
--paperSpigot = "1.20.6-R0.1-SNAPSHOT"
-+spigot = "1.21.11-R0.1-SNAPSHOT" # surf - update build
-+paperSpigot = "1.21.11-R0.1-SNAPSHOT" # surf - update build
- junit = "6.0.0"
- mockito = "4.11.0"
- adventure-api = "4.25.0"
--kotlin = "1.9.20"
-+kotlin = "2.3.21" # surf - update build
- plugin-shadowjar = "8.3.8"
- plugin-spotless = "7.2.1"
- plugin-bukkit = "0.7.1"
 diff --git a/gradle/wrapper/gradle-wrapper.properties b/gradle/wrapper/gradle-wrapper.properties
-index d4081da476bb3ee087bb538a0bb6718958af29a4..5dd3c0121b39a12d2e64dc76e5ed49b822a375ad 100644
+index 4f5eb9dcc0ef484566e064668881418aa552b692..5dd3c0121b39a12d2e64dc76e5ed49b822a375ad 100644
 --- a/gradle/wrapper/gradle-wrapper.properties
 +++ b/gradle/wrapper/gradle-wrapper.properties
 @@ -1,6 +1,6 @@
  distributionBase=GRADLE_USER_HOME
  distributionPath=wrapper/dists
--distributionUrl=https\://services.gradle.org/distributions/gradle-8.14.3-bin.zip
+-distributionUrl=https\://services.gradle.org/distributions/gradle-8.14.5-bin.zip
 +distributionUrl=https\://services.gradle.org/distributions/gradle-9.5.1-bin.zip
  networkTimeout=10000
  validateDistributionUrl=true
@@ -156,16 +136,3 @@ index 52a1b59827433e2ee37f78a7097c0ff0f1322c39..b796e06fcc601aed2d26df5fec6bf3b3
      }
  }
 \ No newline at end of file
-diff --git a/inventory-framework-platform-paper/build.gradle.kts b/inventory-framework-platform-paper/build.gradle.kts
-index 8c4131015d401c05264c8f73050b588c0cc04eb3..c1d7ff0250969511f8ea2a1d80682603f48615c6 100644
---- a/inventory-framework-platform-paper/build.gradle.kts
-+++ b/inventory-framework-platform-paper/build.gradle.kts
-@@ -13,7 +13,7 @@ dependencies {
- }
- 
- java {
--    targetCompatibility = JavaVersion.VERSION_21
-+    targetCompatibility = JavaVersion.VERSION_25 // surf - update build
- }
- 
- tasks.shadowJar {

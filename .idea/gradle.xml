@@ -18,6 +18,7 @@
                   <project path="$PROJECT_DIR$/inventory-framework" />
                   <project path="$PROJECT_DIR$/inventory-framework/examples/minestom" />
                   <project path="$PROJECT_DIR$/inventory-framework/examples/paper" />
+                  <project path="$PROJECT_DIR$/inventory-framework/intellij-plugin" />
                   <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-anvil-input" />
                   <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-api" />
                   <project path="$PROJECT_DIR$/inventory-framework/inventory-framework-core" />
@@ -40,6 +41,7 @@
             <option value="$PROJECT_DIR$/inventory-framework/build-logic/conventions" />
             <option value="$PROJECT_DIR$/inventory-framework/examples/minestom" />
             <option value="$PROJECT_DIR$/inventory-framework/examples/paper" />
+            <option value="$PROJECT_DIR$/inventory-framework/intellij-plugin" />
             <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-anvil-input" />
             <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-api" />
             <option value="$PROJECT_DIR$/inventory-framework/inventory-framework-core" />
