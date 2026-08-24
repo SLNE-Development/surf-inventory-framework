@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: twisti-dev <76837088+twisti-dev@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 12:35:25 +0200
+Subject: [PATCH] exclude intellij tooling plugin from the build
+
+* the intellij-plugin module added in upstream 3.8.0-beta targets JVM 21 and
+  cannot depend on inventory-framework-api, which this fork builds for JVM 25
+* it also pulls the whole IntelliJ Platform, which this fork does not publish
+
+diff --git a/settings.gradle.kts b/settings.gradle.kts
+index 412c0d16c1bc892e476074aaf76f8a9c528e60a7..3c2a1d87744b3e563ea4cb7e39ce74d6292a0926 100644
+--- a/settings.gradle.kts
++++ b/settings.gradle.kts
+@@ -38,7 +38,7 @@ include(
+     "inventory-framework-anvil-input",
+     "example-paper",
+     "example-minestom",
+-    "intellij-plugin"
++//    "intellij-plugin" // surf - exclude intellij tooling plugin, it targets JVM 21
+ )
+ 
+ project(":example-paper").projectDir = file("examples/paper")
