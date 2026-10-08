@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TheBjoRedCraft <red@slne.dev>
+Date: Wed, 7 Oct 2026 15:30:21 +0200
+Subject: [PATCH] support nullable state values
+
+* compare the uninitialized marker of lazy values by identity, a null computed value (e.g. an initial state with null or missing initial data) threw a NullPointerException on the next access
+* declare initial data and raw state values as nullable in the minestom contexts so kotlin does not throw on null values
+
+diff --git a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/LazyValue.java b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/LazyValue.java
+index 9fd5ae5354ade98226f9e0ae246ff04616c8eaca..121f8f30b51ba2032e6bc1baaad91a7548c4831b 100644
+--- a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/LazyValue.java
++++ b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/state/LazyValue.java
+@@ -29,7 +29,10 @@ public final class LazyValue extends AbstractStateValue {
+ 
+     @Override
+     public Object get() {
+-        if (currValue.equals(UNINITIALIZED)) currValue = computation.get();
++        // surf start - support nullable state values
++        // identity check, a computed value can be null so currValue.equals(...) would throw a NPE
++        if (currValue == UNINITIALIZED) currValue = computation.get();
++        // surf end - support nullable state values
+         return currValue;
+     }
+ 
+diff --git a/inventory-framework-core/src/test/java/me/devnatan/inventoryframework/state/StateValueHostTest.java b/inventory-framework-core/src/test/java/me/devnatan/inventoryframework/state/StateValueHostTest.java
+index 4ed16241cd95db1c2c36aee62839bac26052f872..c8062b7f1cc5a247d71caaab99e57089d3fa2264 100644
+--- a/inventory-framework-core/src/test/java/me/devnatan/inventoryframework/state/StateValueHostTest.java
++++ b/inventory-framework-core/src/test/java/me/devnatan/inventoryframework/state/StateValueHostTest.java
+@@ -1,7 +1,9 @@
+ package me.devnatan.inventoryframework.state;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
+ 
++import java.util.concurrent.atomic.AtomicInteger;
+ import org.junit.jupiter.api.Test;
+ 
+ class StateValueHostTest {
+@@ -14,6 +16,50 @@ class StateValueHostTest {
+         assertEquals("abc", host.getRawStateValue(state));
+     }
+ 
++    // surf start - support nullable state values
++    @Test
++    void getNullImmutableValue() {
++        StateValueHost host = new DefaultStateValueHost();
++        State<?> state = new BaseState<>(0, ($, valueState) -> new ImmutableValue(valueState, null));
++
++        assertNull(host.getRawStateValue(state));
++    }
++
++    @Test
++    void getNullComputedValue() {
++        StateValueHost host = new DefaultStateValueHost();
++        State<?> state = new BaseState<>(0, ($, valueState) -> new ComputedValue(valueState, () -> null));
++
++        assertNull(host.getRawStateValue(state));
++    }
++
++    @Test
++    void getNullLazyValue() {
++        StateValueHost host = new DefaultStateValueHost();
++        AtomicInteger computations = new AtomicInteger();
++        State<?> state = new BaseState<>(0, ($, valueState) -> new LazyValue(valueState, () -> {
++            computations.incrementAndGet();
++            return null;
++        }));
++
++        assertNull(host.getRawStateValue(state));
++        assertNull(host.getRawStateValue(state));
++        assertEquals(1, computations.get());
++    }
++
++    @Test
++    void setNullMutableValue() {
++        StateValueHost host = new DefaultStateValueHost();
++        State<?> state = new BaseState<>(0, ($, valueState) -> new MutableValue(valueState, "abc"));
++
++        host.updateState(state, null);
++        assertNull(host.getRawStateValue(state));
++
++        host.updateState(state, "def");
++        assertEquals("def", host.getRawStateValue(state));
++    }
++    // surf end - support nullable state values
++
+     //    @Test
+     //    void getComputedValue() {
+     //        DefaultStateValueHost host = new DefaultStateValueHost();
+diff --git a/inventory-framework-platform-minestom/src/main/kotlin/me/devnatan/inventoryframework/context/CloseContext.kt b/inventory-framework-platform-minestom/src/main/kotlin/me/devnatan/inventoryframework/context/CloseContext.kt
+index 214046a39e1bd6218268b1ec41240b05094a0356..72cabf167d9b1ee51a97c9501857f7916c9c5860 100644
+--- a/inventory-framework-platform-minestom/src/main/kotlin/me/devnatan/inventoryframework/context/CloseContext.kt
++++ b/inventory-framework-platform-minestom/src/main/kotlin/me/devnatan/inventoryframework/context/CloseContext.kt
+@@ -63,9 +63,9 @@ class CloseContext
+ 
+         override fun getRoot(): View = getParent().getRoot()
+ 
+-        override fun getInitialData(): Any = getParent().initialData
++        override fun getInitialData(): Any? = getParent().initialData // surf - support nullable state values
+ 
+-        override fun setInitialData(initialData: Any) {
++        override fun setInitialData(initialData: Any?) { // surf - support nullable state values
+             getParent().initialData = initialData
+         }
+ 
+@@ -85,7 +85,7 @@ class CloseContext
+             getParent().watchState(id, listener)
+         }
+ 
+-        override fun getRawStateValue(state: State<*>?): Any = getParent().getRawStateValue(state)
++        override fun getRawStateValue(state: State<*>?): Any? = getParent().getRawStateValue(state) // surf - support nullable state values
+ 
+         override fun getInternalStateValue(state: State<*>): StateValue = getParent().getInternalStateValue(state)
+ 
+diff --git a/inventory-framework-platform-minestom/src/main/kotlin/me/devnatan/inventoryframework/context/SlotContext.kt b/inventory-framework-platform-minestom/src/main/kotlin/me/devnatan/inventoryframework/context/SlotContext.kt
+index 8f20d470db7d1948b31e1238cda6bbea6bc8b381..150faa585bc3b8210c8bb2d35bffac0ce57628e6 100644
+--- a/inventory-framework-platform-minestom/src/main/kotlin/me/devnatan/inventoryframework/context/SlotContext.kt
++++ b/inventory-framework-platform-minestom/src/main/kotlin/me/devnatan/inventoryframework/context/SlotContext.kt
+@@ -84,7 +84,7 @@ abstract class SlotContext
+             getParent().update()
+         }
+ 
+-        override fun getRawStateValue(state: State<*>?): Any = getParent().getRawStateValue(state)
++        override fun getRawStateValue(state: State<*>?): Any? = getParent().getRawStateValue(state) // surf - support nullable state values
+ 
+         override fun getInternalStateValue(state: State<*>): StateValue = getParent().getInternalStateValue(state)
+ 
+@@ -119,9 +119,9 @@ abstract class SlotContext
+ 
+         override fun getRoot(): View = getParent().getRoot()
+ 
+-        override fun getInitialData(): Any = getParent().initialData
++        override fun getInitialData(): Any? = getParent().initialData // surf - support nullable state values
+ 
+-        override fun setInitialData(initialData: Any) {
++        override fun setInitialData(initialData: Any?) { // surf - support nullable state values
+             getParent().initialData = initialData
+         }
+ 
