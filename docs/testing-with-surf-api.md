@@ -6,7 +6,7 @@ einem Server zu testen, muss er also erst als Artefakt vorliegen, das surf-api a
 
 ```
 surf-inventory-framework          surf-api
-  7 Module, group                   Katalog: inventory-framework = "1.0.4"
+  7 Module, group                   Katalog: inventory-framework = "1.1.1"
   dev.slne.forks.inventoryframework   → inventory-framework-platform-paper
   Version aus root gradle.properties  → inventory-framework-platform-bukkit
         │                                        │
@@ -23,7 +23,7 @@ surf-inventory-framework          surf-api
 Gradle cached Release-Versionen aus mavenLocal und würde beim zweiten Durchlauf das alte Jar nehmen.
 
 ```properties
-version=1.0.5-packet-guis-SNAPSHOT
+version=1.1.2-packet-guis-SNAPSHOT
 ```
 
 Dann vom Fork-Root aus:
@@ -43,7 +43,7 @@ ls ~/.m2/repository/dev/slne/forks/inventoryframework/inventory-framework-platfo
 ```bash
 cd ../surf-api
 ./gradlew :surf-api-paper:surf-api-paper-server:shadowJar \
-  -PinventoryFramework.localVersion=1.0.5-packet-guis-SNAPSHOT
+  -PinventoryFramework.localVersion=1.1.2-packet-guis-SNAPSHOT
 ```
 
 Die Property schaltet in `buildSrc/src/main/kotlin/core-convention.gradle.kts` zwei Dinge frei:
@@ -55,7 +55,7 @@ Zur Kontrolle loggt jedes Projekt beim Konfigurieren:
 
 ```
 [surf] :surf-api-paper:surf-api-paper-server: resolving dev.slne.forks.inventoryframework
-       from mavenLocal at 1.0.5-packet-guis-SNAPSHOT
+       from mavenLocal at 1.1.2-packet-guis-SNAPSHOT
 ```
 
 Das fertige Jar liegt unter `surf-api-paper/surf-api-paper-server/build/libs/`.
@@ -87,11 +87,11 @@ cd surf-inventory-framework
 # Änderung in den Ziel-Commit falten und den Patch neu schreiben:
 (cd inventory-framework && git add -A && git commit --amend --no-edit --author="Keviro <keviro@slne.dev>")
 ./gradlew makePatches
-perl -i -pe 's/\r\n/\n/g' patches/0006-*.patch   # makePatches schreibt unter Windows CRLF
+perl -i -pe 's/\r\n/\n/g' patches/0009-*.patch   # makePatches schreibt unter Windows CRLF
 
 ./gradlew publishToMavenLocal
 cd ../surf-api && ./gradlew :surf-api-paper:surf-api-paper-server:shadowJar \
-  -PinventoryFramework.localVersion=1.0.5-packet-guis-SNAPSHOT
+  -PinventoryFramework.localVersion=1.1.2-packet-guis-SNAPSHOT
 ```
 
 Weil die Version ein SNAPSHOT ist, zieht Gradle das neu publizierte Jar ohne

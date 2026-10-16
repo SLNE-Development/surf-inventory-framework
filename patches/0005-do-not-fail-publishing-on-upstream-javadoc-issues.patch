@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: twisti-dev <76837088+twisti-dev@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 12:35:25 +0200
+Subject: [PATCH] do not fail publishing on upstream javadoc issues
+
+* disable doclint and failOnError for Javadoc tasks in the library convention
+* upstream 3.8.0-beta references net.minecraft.server.level.ServerPlayer via
+  @see in ReflectionUtils, which is not on the spigot-api javadoc classpath
+
+diff --git a/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt b/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt
+index 3d86e078fe5bb68f925e592e7fb48db846f3b186..3f9b090234583eb3dbab75f2a636faf0691c483e 100644
+--- a/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt
++++ b/build-logic/conventions/src/main/kotlin/LibraryConventionPlugin.kt
+@@ -8,6 +8,7 @@ import org.gradle.api.tasks.compile.JavaCompile
+ import org.gradle.api.tasks.javadoc.Javadoc
+ import org.gradle.api.tasks.testing.Test
+ import org.gradle.external.javadoc.JavadocMemberLevel
++import org.gradle.external.javadoc.StandardJavadocDocletOptions
+ import org.gradle.kotlin.dsl.configure
+ import org.gradle.kotlin.dsl.create
+ import org.gradle.kotlin.dsl.getByType
+@@ -44,6 +45,10 @@ internal class LibraryConventionPlugin : Plugin<Project> {
+         with(tasks) {
+             withType<Javadoc> {
+                 options.memberLevel = JavadocMemberLevel.PACKAGE
++                // surf start - do not fail publishing on upstream javadoc issues
++                isFailOnError = false
++                (options as StandardJavadocDocletOptions).addStringOption("Xdoclint:none", "-quiet")
++                // surf end - do not fail publishing on upstream javadoc issues
+             }
+             withType<JavaCompile>().configureEach {
+                 options.encoding = "UTF-8"

@@ -35,18 +35,18 @@ explicitly un-cancels the click and rewrites the clicked item. See
 docs/packet-gui-backend.md.
 
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 89850fa8d67a4ff08fbe5997ab94625e50c0cf19..daec84d3a7722c8390ae6624b01b84d52c596df9 100644
+index e5cc9810be9467986a0ce729fb0444230efbc7c0..da32ab39af2fa265423c36ccba282044ccac020c 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
-@@ -14,6 +14,7 @@ plugin-spotless = "7.2.1"
- plugin-bukkit = "0.7.1"
+@@ -19,6 +19,7 @@ plugin-spotless = "7.2.1"
+ plugin-bukkit = "0.8.0"
  minestom = "b39badc77b"
  folialib = "0.5.1"
 +packetevents = "2.12.1"
  
  [libraries.spigot]
  module = "org.spigotmc:spigot-api"
-@@ -57,10 +58,14 @@ version.ref = "minestom"
+@@ -62,10 +63,14 @@ version.ref = "minestom"
  module = "com.tcoded:FoliaLib"
  version.ref = "folialib"
  
@@ -64,10 +64,10 @@ index 89850fa8d67a4ff08fbe5997ab94625e50c0cf19..daec84d3a7722c8390ae6624b01b84d5
 \ No newline at end of file
 +publish = { id = "com.vanniktech.maven.publish.base", version = "0.34.0" }
 diff --git a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/component/PaginationImpl.java b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/component/PaginationImpl.java
-index 382dc753871faedef550b566b507e52fdd040e30..cb1bb0ac10c1c70d7ba60cd35271ff3210c469af 100644
+index c55b3a4284a99a9c3f99f58f5188d8ba062e5f4a..e5fbe4fb734fc15f819b0db90e378d5694650d13 100644
 --- a/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/component/PaginationImpl.java
 +++ b/inventory-framework-core/src/main/java/me/devnatan/inventoryframework/component/PaginationImpl.java
-@@ -282,7 +282,7 @@ public class PaginationImpl extends AbstractStateValue implements Pagination, In
+@@ -285,7 +285,7 @@ public class PaginationImpl extends AbstractStateValue implements Pagination, In
  
                      final Component component = componentFactory.create();
  
@@ -76,7 +76,7 @@ index 382dc753871faedef550b566b507e52fdd040e30..cb1bb0ac10c1c70d7ba60cd35271ff32
                      getInternalComponents().add(component);
                      index++;
                      continue;
-@@ -296,7 +296,7 @@ public class PaginationImpl extends AbstractStateValue implements Pagination, In
+@@ -299,7 +299,7 @@ public class PaginationImpl extends AbstractStateValue implements Pagination, In
                  final ComponentFactory factory = elementFactory.create(this, index, layoutPosition, paginatedValue);
                  final Component component = factory.create();
  
@@ -99,10 +99,10 @@ index e050121d60d533fd55677306fc3d0ea06b011fd8..4b9a363340f204570bcdac70319e1fa7
  
          return value;
 diff --git a/inventory-framework-platform-bukkit/build.gradle.kts b/inventory-framework-platform-bukkit/build.gradle.kts
-index 6a29127fffd904f31720719a40c8f61bf4c1ae05..962b7f2e899084e96809ca6e66885042da047083 100644
+index 5bad715a1486cb3f2125af16dc5b56f96c411795..3f1e94ebcca490b24eacc5465def991332630c1b 100644
 --- a/inventory-framework-platform-bukkit/build.gradle.kts
 +++ b/inventory-framework-platform-bukkit/build.gradle.kts
-@@ -13,8 +13,16 @@ dependencies {
+@@ -17,8 +17,16 @@ dependencies {
      api(projects.inventoryFrameworkPlatform)
      runtimeOnly(projects.inventoryFrameworkAnvilInput)
      compileOnly(libs.spigot)
@@ -120,8 +120,8 @@ index 6a29127fffd904f31720719a40c8f61bf4c1ae05..962b7f2e899084e96809ca6e66885042
 +    testRuntimeOnly(libs.packetevents.spigot)
      testImplementation(projects.inventoryFrameworkApi)
      testImplementation(projects.inventoryFrameworkTest)
-     implementation(libs.folialib)
-@@ -39,5 +47,6 @@ bukkit {
+     compileOnly(libs.folialib)
+@@ -54,5 +62,6 @@ bukkit {
      website = "https://github.com/DevNatan/inventory-framework"
      apiVersion = "1.13"
      authors = listOf("SaiintBrisson", "DevNatan", "sasuked")
@@ -5834,7 +5834,7 @@ index 0000000000000000000000000000000000000000..8f73512e02404bcb445b1b1630d45f93
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
-index ec3bd553181923362bece51aff5fec6983a8a52f..b5888370d5c9703c7487d4312df7e9c989e3940d 100644
+index dea48fd819b5d5161dc6cdb99f4b3dd71a80d526..828cfca394ee7835b35829a7fb19190dcbee5b9f 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/GlobalClickInterceptor.java
 @@ -4,7 +4,6 @@ import static me.devnatan.inventoryframework.ViewConfig.CANCEL_ON_CLICK;
@@ -5845,18 +5845,21 @@ index ec3bd553181923362bece51aff5fec6983a8a52f..b5888370d5c9703c7487d4312df7e9c9
  import org.jetbrains.annotations.NotNull;
  
  /**
-@@ -18,10 +17,9 @@ public final class GlobalClickInterceptor implements PipelineInterceptor<Virtual
+@@ -18,13 +17,12 @@ public final class GlobalClickInterceptor implements PipelineInterceptor<Virtual
          if (!(subject instanceof SlotClickContext)) return;
  
          final SlotClickContext context = (SlotClickContext) subject;
 -        final InventoryClickEvent event = context.getClickOrigin();
  
+         final boolean allowedOnEntityContainer =
+                 context.isOnEntityContainer() && context.getConfig().isEntityContainerInteractionsAllowed();
+ 
          // inherit cancellation so we can un-cancel it
--        context.setCancelled(event.isCancelled() || context.getConfig().isOptionSet(CANCEL_ON_CLICK, true));
-+        context.setCancelled(context.isCancelled() || context.getConfig().isOptionSet(CANCEL_ON_CLICK, true));
+-        context.setCancelled(event.isCancelled()
++        context.setCancelled(context.isCancelled()
+                 || (context.getConfig().isOptionSet(CANCEL_ON_CLICK, true) && !allowedOnEntityContainer));
          context.getRoot().onClick(context);
      }
- }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java
 index db6b8c48c4c406e78aa84d3af4a15d0421ff53b0..4047e6e71b9e3086810236355f64e7354124358c 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/pipeline/ItemClickInterceptor.java
@@ -6148,7 +6151,7 @@ index 0000000000000000000000000000000000000000..6e48f6a60b6924d63bb9b3ae783a0003
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/RenderContextTitleTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/RenderContextTitleTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7bdd265d63afb5ab29c3d341cfb417de49a6ab74
+index 0000000000000000000000000000000000000000..c6e7a6c072e378e9ae48ba72ca441f2c1bd793c9
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/RenderContextTitleTest.java
 @@ -0,0 +1,129 @@
@@ -6249,7 +6252,7 @@ index 0000000000000000000000000000000000000000..7bdd265d63afb5ab29c3d341cfb417de
 +        }
 +
 +        final ViewConfig config = new ViewConfig(
-+                "Shop", 27, ViewType.CHEST, new HashMap<>(), null, Collections.emptySet(), 0, 0, false);
++                "Shop", 27, ViewType.CHEST, new HashMap<>(), null, Collections.emptySet(), 0, 0, false, false, null);
 +        return new RenderContext(UUID.randomUUID(), mock(View.class), config, container, indexed, null, null);
 +    }
 +
@@ -8014,15 +8017,15 @@ index 0000000000000000000000000000000000000000..d73854a7b3e930e25ff1380ac0dfccc6
 +    }
 +}
 diff --git a/settings.gradle.kts b/settings.gradle.kts
-index 05585a2bd587532365bfe98563ecc18047386144..f26ceb55f94d93d4eaf30706bf82998bab48f278 100644
+index 3c2a1d87744b3e563ea4cb7e39ce74d6292a0926..53c20edf754e14ae90b5b05b3f27aa6586483194 100644
 --- a/settings.gradle.kts
 +++ b/settings.gradle.kts
-@@ -10,6 +10,8 @@ dependencyResolutionManagement {
+@@ -18,6 +18,8 @@ dependencyResolutionManagement {
          maven("https://oss.sonatype.org/content/repositories/snapshots")
          maven("https://repo.papermc.io/repository/maven-public/")
          maven("https://repo.tcoded.com/releases")
 +        maven("https://repo.codemc.io/repository/maven-releases/")
 +        maven("https://repo.codemc.io/repository/maven-snapshots/")
-     }
- }
- 
+         intellijPlatform {
+             defaultRepositories()
+         }

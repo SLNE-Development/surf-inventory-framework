@@ -8,7 +8,7 @@ Subject: [PATCH] support updated minecraft version string formats
 * preserve separator counting for non-patch version formats using dot characters
 
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
-index 56f4156079642a56f53f95ee6e9b706ce5d9569f..e7bf4de8371c23270d2e69203209f739287b6a29 100644
+index 276e1f13f742805813b8f1fd89bb48f461754695..cf3a2bf6c7a410f8bdbd9f79ed88f21df8c5e7d2 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/runtime/thirdparty/McVersion.java
 @@ -7,6 +7,8 @@ public class McVersion implements Comparable<McVersion> {
@@ -50,10 +50,3 @@ index 56f4156079642a56f53f95ee6e9b706ce5d9569f..e7bf4de8371c23270d2e69203209f739
  
      private static int countColons(final String string) {
          int count = 0;
-@@ -142,5 +167,5 @@ public class McVersion implements Comparable<McVersion> {
-      */
-     public static boolean supports(int minorNumber, int patchNumber) {
-         return CURRENT_VERSION.isAtLeast(1, minorNumber, patchNumber);
--    }
-+	}
- }

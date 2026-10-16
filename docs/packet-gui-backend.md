@@ -106,6 +106,11 @@ Startup log lines to look for:
   it is opt-in. On such a view the only place that can restore it is `View#onClick`, which runs *inside*
   `GlobalClickInterceptor` after the config has been applied; a component or slot click handler runs earlier,
   so a `setCancelled(false)` there is silently overridden.
+
+  **`allowEntityContainerInteractions()` does not make the inventory writable.** It exempts bottom clicks
+  from `cancelOnClick()`, so they reach the view uncancelled, but the click packet is still cancelled before
+  vanilla sees it: nothing moves unless a handler calls `setCurrentItem(...)`. On the Bukkit backend the same
+  option lets vanilla move the items.
 - **Drag, double-click, the drop key and unknown click modes are denied.** They are cancelled and answered
   with a full resync; no view callback runs for them.
 - **Outside clicks are routed.** The protocol has two wire forms for them, and both are accepted on a negative
