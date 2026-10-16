@@ -149,7 +149,7 @@ index 16e4791981a4fd159659190b2ac3e1a961e28e90..78c704d7457a6fe653346e5d10037292
  
      @Override
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
-index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..474868399feaa05336b8716d371846d8b62f8d18 100644
+index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..6dba1d159a5942f2f08b50c97cd7184d3f81a14f 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/IFInventoryListener.java
 @@ -5,6 +5,8 @@ import me.devnatan.inventoryframework.context.IFCloseContext;
@@ -222,7 +222,7 @@ index e7d2c7a0b3eb58341695ee8111d31473c76b0aed..474868399feaa05336b8716d371846d8
 +
 +    @EventHandler(priority = EventPriority.MONITOR)
 +    public void onPlayerRespawn(final PlayerRespawnEvent event) {
-+        guiBackend.handleWorldChange(event.getPlayer());
++        guiBackend.handleRespawn(event.getPlayer());
 +    }
 +
      @EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
@@ -577,10 +577,10 @@ index 0000000000000000000000000000000000000000..f39f3bb5896337702b2fe6a12f39e985
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..60a792e734ca62e792596424f4fa31ee66045b86
+index 0000000000000000000000000000000000000000..df6c27e5c7cc7dd46f087af21d9d813305a5e4db
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/PacketSlotClickOrigin.java
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,198 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import org.bukkit.entity.Player;
@@ -597,6 +597,7 @@ index 0000000000000000000000000000000000000000..60a792e734ca62e792596424f4fa31ee
 +
 +    private final Player player;
 +    private ItemStack currentItem;
++    private boolean currentItemReplaced;
 +    private final InventoryType.SlotType slotType;
 +    private final InventoryAction action;
 +    private final int hotbarButton;
@@ -673,6 +674,18 @@ index 0000000000000000000000000000000000000000..60a792e734ca62e792596424f4fa31ee
 +    @Override
 +    public void setCurrentItem(@Nullable ItemStack item) {
 +        this.currentItem = item == null ? null : item.clone();
++        this.currentItemReplaced = true;
++    }
++
++    /**
++     * Whether a handler set the clicked item through {@link #setCurrentItem(ItemStack)}.
++     *
++     * <p>Without that, {@link #getCurrentItem()} still holds the copy taken before the click pipeline ran. Writing
++     * it back would undo whatever the handler changed through {@code player.getInventory()} in the meantime - a
++     * view that removes the clicked item and pays for it would hand the item straight back.
++     */
++    public boolean isCurrentItemReplaced() {
++        return currentItemReplaced;
 +    }
 +
 +    @Override
@@ -827,7 +840,7 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..992fbb75c57e056a275b5d48f0817a4e
      }
  }
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
-index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d58e95e70ea10ba7383aa6c18360f7edefe245e6 100644
+index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..212f8b412d9cb26d5efb8b990eebe9fb5dfe1bdb 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/SlotClickContext.java
 @@ -5,11 +5,8 @@ import me.devnatan.inventoryframework.ViewContainer;
@@ -842,19 +855,19 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d58e95e70ea10ba7383aa6c18360f7ed
  import org.jetbrains.annotations.ApiStatus;
  import org.jetbrains.annotations.NotNull;
  import org.jetbrains.annotations.Nullable;
-@@ -19,9 +16,10 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -19,9 +16,9 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      private final Viewer whoClicked;
      private final ViewContainer clickedContainer;
      private final Component clickedComponent;
 -    private final InventoryClickEvent clickOrigin;
 +    private final SlotClickOrigin clickOrigin;
      private final boolean combined;
-     private boolean cancelled;
+-    private boolean cancelled;
 +    private InventoryClickEvent compatClickEvent;
  
      @ApiStatus.Internal
      public SlotClickContext(
-@@ -32,30 +30,78 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -32,11 +29,27 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
              @Nullable Component clickedComponent,
              @NotNull InventoryClickEvent clickOrigin,
              boolean combined) {
@@ -881,10 +894,9 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d58e95e70ea10ba7383aa6c18360f7ed
 -        this.clickOrigin = clickOrigin;
 +        this.clickOrigin = normalizeOrigin(clickOrigin);
          this.combined = combined;
-+        this.cancelled = this.clickOrigin.isCancelled();
      }
  
-     /**
+@@ -44,18 +57,49 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
       * The player who clicked on the slot.
       */
      public final @NotNull Player getPlayer() {
@@ -937,10 +949,25 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d58e95e70ea10ba7383aa6c18360f7ed
      }
  
      /**
-@@ -84,12 +130,13 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -76,20 +120,26 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+         return clickedContainer;
+     }
+ 
++    /**
++     * Read from the click origin rather than cached here. On the Bukkit backend a handler can cancel the real
++     * event without going through this context - {@code getClickOrigin().setCancelled(true)} or
++     * {@code setResult(DENY)} - and {@code GlobalClickInterceptor} writes whatever this returns back to the
++     * event. A copy taken at construction would turn such a cancel into an allowed click.
++     */
+     @Override
+     public final boolean isCancelled() {
+-        return cancelled;
++        return clickOrigin.isCancelled();
+     }
+ 
      @Override
      public final void setCancelled(boolean cancelled) {
-         this.cancelled = cancelled;
+-        this.cancelled = cancelled;
 -        getClickOrigin().setCancelled(cancelled);
 +        clickOrigin.setCancelled(cancelled);
      }
@@ -953,7 +980,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d58e95e70ea10ba7383aa6c18360f7ed
      }
  
      @Override
-@@ -99,42 +146,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -99,42 +149,42 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
  
      @Override
      public final boolean isLeftClick() {
@@ -1004,7 +1031,7 @@ index c0bb94198697239a1dd0e1cf986f8fdcf62143e1..d58e95e70ea10ba7383aa6c18360f7ed
      }
  
      @Override
-@@ -176,4 +223,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
+@@ -176,4 +226,11 @@ public class SlotClickContext extends SlotContext implements IFSlotClickContext
      public final boolean isCombined() {
          return combined;
      }
@@ -1200,10 +1227,10 @@ index 0000000000000000000000000000000000000000..a6a7f90ce6335143cf8fbeb694a414ae
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..1ebc23498c0bf82552da3ef8c78d433385ceb688
+index 0000000000000000000000000000000000000000..c7cc17a91b046e9da82e64c5a44787b65493255b
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/GuiBackend.java
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,54 @@
 +package me.devnatan.inventoryframework.internal;
 +
 +import me.devnatan.inventoryframework.ViewContainer;
@@ -1242,6 +1269,16 @@ index 0000000000000000000000000000000000000000..1ebc23498c0bf82552da3ef8c78d4333
 +     */
 +    default boolean handleWorldChange(@NotNull Player player) {
 +        return false;
++    }
++
++    /**
++     * Same as {@link #handleWorldChange(Player)}, for a respawn. Kept apart so a backend can report the close
++     * the way the server reports a container closed by death.
++     *
++     * @return {@code true} when a session was finalized by this backend.
++     */
++    default boolean handleRespawn(@NotNull Player player) {
++        return handleWorldChange(player);
 +    }
 +
 +    default boolean isPacketBackend() {
@@ -1327,10 +1364,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e48ae520a
+index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3aece5ae6b2
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1612 @@
+@@ -0,0 +1,1638 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1358,7 +1395,6 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +import me.devnatan.inventoryframework.RootView;
 +import me.devnatan.inventoryframework.ViewContainer;
 +import me.devnatan.inventoryframework.ViewType;
-+import me.devnatan.inventoryframework.Viewer;
 +import me.devnatan.inventoryframework.component.Component;
 +import me.devnatan.inventoryframework.context.IFCloseContext;
 +import me.devnatan.inventoryframework.context.IFRenderContext;
@@ -1371,6 +1407,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +import org.bukkit.Material;
 +import org.bukkit.entity.Player;
 +import org.bukkit.event.inventory.InventoryAction;
++import org.bukkit.event.inventory.InventoryCloseEvent;
 +import org.bukkit.event.inventory.InventoryType;
 +import org.bukkit.inventory.InventoryView;
 +import org.bukkit.inventory.ItemStack;
@@ -1391,13 +1428,6 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +@ApiStatus.Internal
 +public final class PacketGuiBackend implements GuiBackend {
 +
-+    private static final String CLOSE_ORIGIN_CLIENT = "packet-gui-client-close";
-+    private static final String CLOSE_ORIGIN_SERVER = "packet-gui-server-close";
-+    private static final String CLOSE_ORIGIN_QUIT = "packet-gui-player-quit";
-+    private static final String CLOSE_ORIGIN_EXTERNAL_OPEN = "packet-gui-external-inventory-open";
-+    private static final String CLOSE_ORIGIN_SHUTDOWN = "packet-gui-shutdown";
-+    private static final String CLOSE_ORIGIN_WORLD_CHANGE = "packet-gui-world-change";
-+
 +    /**
 +     * Logs every inbound GUI click and the routing decision taken for it. Enable with
 +     * {@code -Dinventory-framework.gui-backend.debug-clicks=true} when a click does not reach a view.
@@ -1408,6 +1438,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +    private final Plugin owner;
 +    private final PlatformScheduler scheduler;
 +    private final BukkitGuiBackend fallbackBackend;
++    private final PacketGuiCloseEvents closeEvents;
 +    private final ConcurrentMap<UUID, PacketGuiSession> sessions = new ConcurrentHashMap<>();
 +    private final ConcurrentMap<UUID, PacketViewerWindowTracker> windowTrackers = new ConcurrentHashMap<>();
 +    private final AtomicInteger nextWindowId = PacketGuiWindowIds.newCounter();
@@ -1431,6 +1462,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +        this.owner = owner;
 +        this.fallbackBackend = fallbackBackend;
 +        this.scheduler = new FoliaLib(owner).getScheduler();
++        this.closeEvents = new PacketGuiCloseEvents(owner.getLogger());
 +    }
 +
 +    @Override
@@ -1543,7 +1575,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +        }
 +
 +        for (final PacketGuiSession session : List.copyOf(sessions.values())) {
-+            closeSession(session, false, CLOSE_ORIGIN_SHUTDOWN, false, false);
++            closeSession(session, false, PacketGuiCloseOrigin.SHUTDOWN, false, false);
 +        }
 +        sessions.clear();
 +        windowTrackers.clear();
@@ -1558,7 +1590,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +
 +        // The return value decides whether IFInventoryListener skips its own quit cleanup, so it has to reflect
 +        // whether this backend really finalized the session.
-+        final boolean closed = closeSession(session, false, CLOSE_ORIGIN_QUIT, true, true);
++        final boolean closed = closeSession(session, false, PacketGuiCloseOrigin.QUIT, true, true);
 +        windowTrackers.remove(player.getUniqueId());
 +        openingViewers.remove(player.getUniqueId());
 +        return closed;
@@ -1569,15 +1601,24 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +        final PacketGuiSession session = sessions.get(player.getUniqueId());
 +        if (session == null) return false;
 +
-+        return closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true);
++        return closeSession(session, false, PacketGuiCloseOrigin.EXTERNAL_OPEN, true, true);
 +    }
 +
 +    @Override
 +    public boolean handleWorldChange(@NotNull Player player) {
++        return closeForScreenChange(player, PacketGuiCloseOrigin.WORLD_CHANGE);
++    }
++
++    @Override
++    public boolean handleRespawn(@NotNull Player player) {
++        return closeForScreenChange(player, PacketGuiCloseOrigin.RESPAWN);
++    }
++
++    private boolean closeForScreenChange(Player player, PacketGuiCloseOrigin origin) {
 +        final PacketGuiSession session = sessions.get(player.getUniqueId());
 +        if (session == null) return false;
 +
-+        return closeSession(session, true, CLOSE_ORIGIN_WORLD_CHANGE, true, true);
++        return closeSession(session, true, origin, true, true);
 +    }
 +
 +    @Override
@@ -1660,7 +1701,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +            final PacketGuiSession previous = sessions.put(player.getUniqueId(), session);
 +            if (previous != null) {
 +                try {
-+                    closeSession(previous, false, CLOSE_ORIGIN_SERVER, true, true);
++                    closeSession(previous, false, PacketGuiCloseOrigin.REPLACED, true, true);
 +                } catch (final RuntimeException exception) {
 +                    owner.getLogger()
 +                            .log(Level.WARNING, "Failed to close the previous packet GUI session", exception);
@@ -1670,7 +1711,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +            if (sessions.get(player.getUniqueId()) != session) {
 +                // A close handler opened another view; that session owns the window now. Drop ours without
 +                // running its close pipeline - it was never opened - and without sending a close packet.
-+                closeSession(session, false, CLOSE_ORIGIN_SERVER, false, false);
++                closeSession(session, false, PacketGuiCloseOrigin.SERVER, false, false);
 +                return;
 +            }
 +
@@ -1739,7 +1780,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +    void close(@NotNull PacketViewContainer container, boolean sendClosePacket) {
 +        for (final PacketGuiSession session : List.copyOf(sessions.values())) {
 +            if (session.container() == container) {
-+                closeSession(session, sendClosePacket, CLOSE_ORIGIN_SERVER, true, true);
++                closeSession(session, sendClosePacket, PacketGuiCloseOrigin.SERVER, true, true);
 +            }
 +        }
 +    }
@@ -1750,7 +1791,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +            return;
 +        }
 +
-+        closeSession(session, sendClosePacket, CLOSE_ORIGIN_SERVER, true, true);
++        closeSession(session, sendClosePacket, PacketGuiCloseOrigin.SERVER, true, true);
 +    }
 +
 +    void requestResync(@NotNull PacketViewContainer container) {
@@ -1834,7 +1875,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +        // applied render of a screen that no longer exists, and send no open packet because nothing about the
 +        // window appears to have changed. The viewer would be left bound to an invisible session.
 +        session.closeRequested(true);
-+        runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_CLIENT, true, true));
++        runOnPlayer(session, () -> closeSession(session, false, PacketGuiCloseOrigin.CLIENT, true, true));
 +    }
 +
 +    /**
@@ -1866,7 +1907,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +            // Same reasoning as handleWindowClose: a real container is taking the screen, so this session must
 +            // stop being a reuse candidate immediately rather than a tick from now.
 +            session.closeRequested(true);
-+            runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_EXTERNAL_OPEN, true, true));
++            runOnPlayer(session, () -> closeSession(session, false, PacketGuiCloseOrigin.EXTERNAL_OPEN, true, true));
 +        }
 +    }
 +
@@ -1900,7 +1941,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +            session.closeRequested(true);
 +            runOnPlayer(session, () -> {
 +                final Player player = session.player();
-+                if (!closeSession(session, false, CLOSE_ORIGIN_SERVER, true, false)) {
++                if (!closeSession(session, false, PacketGuiCloseOrigin.SERVER, true, false)) {
 +                    return;
 +                }
 +
@@ -1934,7 +1975,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +
 +        final PacketGuiSession session = sessions.get(viewerId);
 +        if (session != null) {
-+            closeSession(session, false, CLOSE_ORIGIN_QUIT, false, false);
++            closeSession(session, false, PacketGuiCloseOrigin.QUIT, false, false);
 +        }
 +        windowTrackers.remove(viewerId);
 +
@@ -2151,17 +2192,31 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +            context.getRoot().getPipeline().execute(StandardPipelinePhases.CLICK, clickContext);
 +        } catch (final RuntimeException exception) {
 +            owner.getLogger().log(Level.SEVERE, "An error occurred while processing a packet GUI click", exception);
-+            closeSession(session, true, CLOSE_ORIGIN_SERVER, true, true);
++            closeSession(session, true, PacketGuiCloseOrigin.SERVER, true, true);
 +            return;
 +        }
 +
-+        // Only mapped player-inventory clicks may mutate the real inventory. Top fake GUI items must
-+        // never touch the player's inventory.
-+        if (playerInventoryClick && mappedPlayerSlot >= 0 && !origin.isCancelled()) {
++        if (writesClickedItemBack(playerInventoryClick, mappedPlayerSlot, origin)) {
 +            applyPlayerInventoryItem(session.player(), mappedPlayerSlot, origin.getCurrentItem());
 +        }
 +
 +        requestRender(session, false, false, repairScope, click);
++    }
++
++    /**
++     * Whether a routed click hands the clicked item back to the viewer's real inventory.
++     *
++     * <p>Only a mapped player-inventory click may - top fake GUI items must never touch the player's inventory -
++     * and only when a handler explicitly set the item and left the click uncancelled. The origin's item is a
++     * copy taken before the pipeline ran; writing it back unasked would overwrite whatever the handler changed
++     * through {@code player.getInventory()}, restoring an item it had just removed.
++     */
++    static boolean writesClickedItemBack(
++            boolean playerInventoryClick, int mappedPlayerSlot, PacketSlotClickOrigin origin) {
++        return playerInventoryClick
++                && mappedPlayerSlot >= 0
++                && !origin.isCancelled()
++                && origin.isCurrentItemReplaced();
 +    }
 +
 +    private void requestRender(PacketGuiSession session, boolean forceReopen, boolean hardResync) {
@@ -2262,7 +2317,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +            sendRenderPlan(session, plan);
 +        } catch (final RuntimeException exception) {
 +            owner.getLogger().log(Level.WARNING, "Failed to prepare packet GUI render", exception);
-+            closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true);
++            closeSession(session, false, PacketGuiCloseOrigin.SERVER, true, true);
 +        }
 +    }
 +
@@ -2505,7 +2560,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +        }
 +
 +        owner.getLogger().log(Level.WARNING, message, exception);
-+        runOnPlayer(session, () -> closeSession(session, false, CLOSE_ORIGIN_SERVER, true, true));
++        runOnPlayer(session, () -> closeSession(session, false, PacketGuiCloseOrigin.SERVER, true, true));
 +    }
 +
 +    /**
@@ -2533,7 +2588,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +
 +        for (final PacketGuiSession open : List.copyOf(sessions.values())) {
 +            try {
-+                runOnPlayer(open, () -> closeSession(open, true, CLOSE_ORIGIN_SERVER, true, true));
++                runOnPlayer(open, () -> closeSession(open, true, PacketGuiCloseOrigin.SERVER, true, true));
 +            } catch (final RuntimeException ignored) {
 +                // Best effort: one viewer failing to close must not stop the others from being released.
 +            }
@@ -2552,7 +2607,7 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +    private boolean closeSession(
 +            PacketGuiSession session,
 +            boolean sendClosePacket,
-+            Object origin,
++            PacketGuiCloseOrigin origin,
 +            boolean callClose,
 +            boolean syncInventory) {
 +        if (session == null) {
@@ -2604,11 +2659,19 @@ index 0000000000000000000000000000000000000000..dda696ccb5cae0960cd2e2de12fdb48e
 +        return true;
 +    }
 +
-+    private void executeClosePipeline(PacketGuiSession session, Object origin) {
++    /**
++     * Fires the Bukkit close event and then runs the view's CLOSE pipeline.
++     *
++     * <p>The server never fires an {@link InventoryCloseEvent} for a packet GUI - it has no container open - but
++     * plugins that do not know about the framework still listen for one. The event goes out first, as on the
++     * Bukkit backend, where it is what starts the pipeline, and the pipeline gets it as its platform event.
++     */
++    private void executeClosePipeline(PacketGuiSession session, PacketGuiCloseOrigin origin) {
 +        final IFRenderContext context = session.context();
 +        final RootView root = context.getRoot();
-+        final Viewer viewer = session.viewer();
-+        final IFCloseContext closeContext = root.getElementFactory().createCloseContext(viewer, context, origin);
++        final BukkitViewer viewer = session.viewer();
++        final InventoryCloseEvent event = closeEvents.fire(session.player(), session.container(), viewer, origin);
++        final IFCloseContext closeContext = root.getElementFactory().createCloseContext(viewer, context, event);
 +        root.getPipeline().execute(StandardPipelinePhases.CLOSE, closeContext);
 +    }
 +
@@ -3202,6 +3265,244 @@ index 0000000000000000000000000000000000000000..3b94afd49d429b52d37f2a8a89e97dd7
 +                + ", button=" + button
 +                + ", clickType=" + clickType
 +                + '}';
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseEvents.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseEvents.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..901ede853a3e0a63fe04cd7494398383d5be4882
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseEvents.java
+@@ -0,0 +1,197 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.lang.reflect.Constructor;
++import java.lang.reflect.Method;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.logging.Level;
++import java.util.logging.Logger;
++import me.devnatan.inventoryframework.Viewer;
++import org.bukkit.Bukkit;
++import org.bukkit.entity.HumanEntity;
++import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.InventoryCloseEvent;
++import org.bukkit.inventory.InventoryView;
++import org.bukkit.inventory.MenuType;
++
++/**
++ * Fires the {@link InventoryCloseEvent} the server never fires for a packet GUI.
++ *
++ * <p>The server has no container open for a packet GUI, so nothing in it notices the GUI going away. Plugins that
++ * do not know about the framework still listen for the close event, so the backend fires one itself whenever a
++ * session ends and runs the view's CLOSE pipeline.
++ *
++ * <p>The event carries a real chest view of the GUI's size and title, built by the server's menu API and never
++ * opened, so listeners that recognise a GUI by its title or size keep working. Its top inventory is empty: GUI
++ * display items are never copied into a real inventory, not even one nobody can see. It has no holder either,
++ * which is also what keeps the framework's own close listener - it only reacts to inventories held by a render
++ * context - from running the view's CLOSE pipeline a second time. Where the menu API is missing, the event
++ * carries the viewer's own inventory view instead.
++ */
++final class PacketGuiCloseEvents {
++
++    private static final Constructor<InventoryCloseEvent> REASON_CONSTRUCTOR;
++    private static final Object[] REASONS;
++
++    static {
++        Constructor<InventoryCloseEvent> constructor;
++        Object[] reasons;
++        try {
++            // Paper only. Spigot's close event has no reason at all.
++            final Class<?> reasonType = Class.forName("org.bukkit.event.inventory.InventoryCloseEvent$Reason");
++            constructor = InventoryCloseEvent.class.getConstructor(InventoryView.class, reasonType);
++            reasons = reasonType.getEnumConstants();
++        } catch (final ReflectiveOperationException | LinkageError ignored) {
++            constructor = null;
++            reasons = null;
++        }
++
++        REASON_CONSTRUCTOR = reasons == null ? null : constructor;
++        REASONS = reasons;
++    }
++
++    private final Logger logger;
++    private final AtomicBoolean reportedFallback = new AtomicBoolean();
++    private volatile boolean menusUnavailable;
++
++    PacketGuiCloseEvents(Logger logger) {
++        this.logger = logger;
++    }
++
++    /**
++     * Builds and fires the close event for a session that just ended. Must run on the viewer's thread.
++     *
++     * @return The fired event. The CLOSE pipeline gets it as its platform event, as it would on the Bukkit
++     *     backend.
++     */
++    InventoryCloseEvent fire(
++            Player player, PacketViewContainer container, Viewer viewer, PacketGuiCloseOrigin origin) {
++        final InventoryView view =
++                viewFor(player, container.getSize(), container.getRawTitle(viewer.getId()), container.getTitle(viewer));
++        final InventoryCloseEvent event = create(view, origin);
++        try {
++            Bukkit.getPluginManager().callEvent(event);
++        } catch (final RuntimeException exception) {
++            // callEvent already isolates exceptions thrown by listeners, so this is the dispatch itself failing.
++            // That must not keep the view's own close handlers from running.
++            logger.log(Level.WARNING, "Failed to fire InventoryCloseEvent for a packet GUI", exception);
++        }
++        return event;
++    }
++
++    /**
++     * A never-opened chest view shaped like the GUI, or the viewer's own view when none can be built.
++     *
++     * @param rawTitle The title as the view configured it, a {@code String} or an Adventure component.
++     * @param plainTitle The same title as text, for servers that only take a {@code String}.
++     */
++    InventoryView viewFor(Player player, int size, Object rawTitle, String plainTitle) {
++        if (!menusUnavailable) {
++            try {
++                final InventoryView view = ChestMenus.create(player, size, rawTitle, plainTitle);
++                if (view != null) {
++                    return view;
++                }
++            } catch (final LinkageError error) {
++                // No menu API on this server, and there never will be - stop trying.
++                menusUnavailable = true;
++                reportFallback(error);
++            } catch (final RuntimeException | ReflectiveOperationException exception) {
++                reportFallback(exception);
++            }
++        }
++
++        return player.getOpenInventory();
++    }
++
++    static InventoryCloseEvent create(InventoryView view, PacketGuiCloseOrigin origin) {
++        final Object reason = reason(origin.closeReason());
++        if (reason != null) {
++            try {
++                return REASON_CONSTRUCTOR.newInstance(view, reason);
++            } catch (final ReflectiveOperationException ignored) {
++                // Fall through to the reasonless event, which Paper reports as UNKNOWN.
++            }
++        }
++
++        return new InventoryCloseEvent(view);
++    }
++
++    private static Object reason(String name) {
++        if (REASON_CONSTRUCTOR == null) {
++            return null;
++        }
++
++        for (final Object reason : REASONS) {
++            if (((Enum<?>) reason).name().equals(name)) {
++                return reason;
++            }
++        }
++        return null;
++    }
++
++    private void reportFallback(Throwable cause) {
++        if (reportedFallback.compareAndSet(false, true)) {
++            logger.log(
++                    Level.WARNING,
++                    "[IF] Could not build a GUI-shaped view for the InventoryCloseEvent of a packet GUI; the event "
++                            + "carries the viewer's own inventory view instead.",
++                    cause);
++        }
++    }
++
++    /**
++     * Every reference to the menu API, kept out of the enclosing class so a server without it fails here, where
++     * the failure is caught, rather than when the enclosing class is linked.
++     */
++    private static final class ChestMenus {
++
++        private static final Method COMPONENT_CREATE = componentCreate();
++
++        private static InventoryView create(Player player, int size, Object rawTitle, String plainTitle)
++                throws ReflectiveOperationException {
++            final MenuType.Typed<InventoryView, ?> menu = chestMenu(size);
++            if (menu == null) {
++                return null;
++            }
++
++            // Paper takes the component as it is, formatting and all. The String overload, the only one Spigot
++            // has, reads legacy colour codes - which is what a String title already is on the Bukkit backend.
++            if (COMPONENT_CREATE != null && COMPONENT_CREATE.getParameterTypes()[1].isInstance(rawTitle)) {
++                return (InventoryView) COMPONENT_CREATE.invoke(menu, player, rawTitle);
++            }
++            return menu.create(player, plainTitle);
++        }
++
++        private static MenuType.Typed<InventoryView, ?> chestMenu(int size) {
++            if (size % 9 != 0) {
++                return null;
++            }
++
++            switch (size / 9) {
++                case 1:
++                    return MenuType.GENERIC_9X1;
++                case 2:
++                    return MenuType.GENERIC_9X2;
++                case 3:
++                    return MenuType.GENERIC_9X3;
++                case 4:
++                    return MenuType.GENERIC_9X4;
++                case 5:
++                    return MenuType.GENERIC_9X5;
++                case 6:
++                    return MenuType.GENERIC_9X6;
++                default:
++                    return null;
++            }
++        }
++
++        private static Method componentCreate() {
++            try {
++                return MenuType.Typed.class.getMethod(
++                        "create", HumanEntity.class, Class.forName("net.kyori.adventure.text.Component"));
++            } catch (final ReflectiveOperationException | LinkageError ignored) {
++                return null;
++            }
++        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseOrigin.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseOrigin.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff0c85752a0bd4090d2557d22036ab1ff1d5df16
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseOrigin.java
+@@ -0,0 +1,29 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++/**
++ * Why a packet GUI session ended.
++ *
++ * <p>Each origin names the {@code InventoryCloseEvent.Reason} Paper reports when a real container goes away the
++ * same way. The name is kept as text because that enum only exists on Paper, and this module compiles against
++ * the Spigot API.
++ */
++enum PacketGuiCloseOrigin {
++    CLIENT("PLAYER"),
++    SERVER("PLUGIN"),
++    REPLACED("OPEN_NEW"),
++    EXTERNAL_OPEN("OPEN_NEW"),
++    QUIT("DISCONNECT"),
++    WORLD_CHANGE("TELEPORT"),
++    RESPAWN("DEATH"),
++    SHUTDOWN("PLUGIN");
++
++    private final String closeReason;
++
++    PacketGuiCloseOrigin(String closeReason) {
++        this.closeReason = closeReason;
++    }
++
++    String closeReason() {
++        return closeReason;
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFields.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFields.java
@@ -3860,7 +4161,7 @@ index 0000000000000000000000000000000000000000..08b3d13cb9ed55cdc5ae754a4868bf8c
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d30e76b1540243b24cc0fb5f1ba05a5c5668f524
+index 0000000000000000000000000000000000000000..d299fdeba78dc2a8dbf5097de57410f472d52f15
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 @@ -0,0 +1,144 @@
@@ -3924,8 +4225,8 @@ index 0000000000000000000000000000000000000000..d30e76b1540243b24cc0fb5f1ba05a5c
 +                // Cancelled, like the click above, and no longer force-uncancelled. The server has no container
 +                // open for a fake window, so there is nothing for vanilla to reset - all its close handling
 +                // would do is fire an InventoryCloseEvent for the player's *own* inventory on every packet GUI
-+                // close, which other plugins see and misread. Un-cancelling also overrode whatever another
-+                // listener had decided about this packet.
++                // close, which other plugins see and misread. The backend fires one shaped like the GUI
++                // instead. Un-cancelling also overrode whatever another listener had decided about this packet.
 +                event.setCancelled(true);
 +                backend.handleWindowClose(event.getUser(), packet.getWindowId());
 +                return;
@@ -5319,10 +5620,10 @@ index 6499f33961d5fbf084ca15f00a65b38d22e4fd0b..3f89ed26c49e0c94da9ea5bc27782675
          if (!(component instanceof ItemComponent) || !component.isVisible()) return;
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickEventTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickEventTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f7ddd7930528444b7446c00952d4f88d51502e1
+index 0000000000000000000000000000000000000000..78cd799047cde44347755610652bad6a23242a6a
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickEventTest.java
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,139 @@
 +package me.devnatan.inventoryframework.context;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -5417,12 +5718,25 @@ index 0000000000000000000000000000000000000000..1f7ddd7930528444b7446c00952d4f88
 +        final Player player = mock(Player.class);
 +        when(player.getOpenInventory()).thenReturn(view);
 +
-+        final SlotClickOrigin origin = mock(SlotClickOrigin.class);
-+        when(origin.getPlayer()).thenReturn(player);
-+        when(origin.getClickIdentifier()).thenReturn("LEFT");
-+        when(origin.getSlotType()).thenReturn(InventoryType.SlotType.CONTAINER);
-+        when(origin.getAction()).thenReturn(InventoryAction.PICKUP_ALL);
-+        when(origin.getRawSlot()).thenReturn(0);
++        // The real packet origin, not a mock: the context reads its cancellation from the origin, so the
++        // origin has to keep what it is told.
++        final SlotClickOrigin origin = new PacketSlotClickOrigin(
++                player,
++                null,
++                InventoryType.SlotType.CONTAINER,
++                InventoryAction.PICKUP_ALL,
++                -1,
++                0,
++                0,
++                null,
++                "LEFT",
++                true,
++                false,
++                false,
++                false,
++                false,
++                false,
++                false);
 +
 +        // A real context, not a mock: isCancelled/setCancelled are final on SlotClickContext, and the point of
 +        // the assertion is that the cancellation lands in the state the backend actually consults.
@@ -5447,6 +5761,201 @@ index 0000000000000000000000000000000000000000..1f7ddd7930528444b7446c00952d4f88
 +            this.event = event;
 +            this.context = context;
 +        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickOriginTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickOriginTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e48f6a60b6924d63bb9b3ae783a0003eab6c5f7
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/PacketSlotClickOriginTest.java
+@@ -0,0 +1,92 @@
++package me.devnatan.inventoryframework.context;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import me.devnatan.inventoryframework.ViewContainer;
++import me.devnatan.inventoryframework.Viewer;
++import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.InventoryAction;
++import org.bukkit.event.inventory.InventoryType;
++import org.bukkit.inventory.InventoryView;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins what the packet backend may treat as "the handler rewrote the clicked item".
++ *
++ * <p>The origin carries a copy of the clicked bottom slot, taken before the click pipeline runs. Writing that copy
++ * back after a handler that changed the slot through {@code player.getInventory()} restores the item the handler
++ * just removed - a duplication for every sell or consume view. Only an explicit {@code setCurrentItem(...)} may
++ * reach the real inventory.
++ */
++class PacketSlotClickOriginTest {
++
++    @Test
++    void reportsNoReplacementWhenTheHandlerNeverSetTheItem() {
++        final PacketSlotClickOrigin origin = newOrigin(stack());
++
++        origin.getCurrentItem();
++
++        assertFalse(origin.isCurrentItemReplaced());
++    }
++
++    @Test
++    void reportsAReplacementOnceTheHandlerSetsTheItem() {
++        final PacketSlotClickOrigin origin = newOrigin(stack());
++
++        origin.setCurrentItem(null);
++
++        assertTrue(origin.isCurrentItemReplaced(), "clearing the slot is a replacement too");
++    }
++
++    /** Consumers moved over from the Bukkit backend write through the synthesized event, not the origin. */
++    @Test
++    void reportsAReplacementMadeThroughTheSynthesizedClickEvent() {
++        final PacketSlotClickOrigin origin = newOrigin(stack());
++        final SlotClickContext context = new SlotClickContext(
++                0,
++                mock(IFRenderContext.class),
++                mock(Viewer.class),
++                mock(ViewContainer.class),
++                null,
++                (Object) origin,
++                false);
++
++        context.getClickOrigin().setCurrentItem(null);
++
++        assertTrue(origin.isCurrentItemReplaced());
++    }
++
++    private static ItemStack stack() {
++        final ItemStack item = mock(ItemStack.class);
++        when(item.clone()).thenReturn(item);
++        return item;
++    }
++
++    private static PacketSlotClickOrigin newOrigin(ItemStack currentItem) {
++        final InventoryView view = mock(InventoryView.class);
++        final Player player = mock(Player.class);
++        when(player.getOpenInventory()).thenReturn(view);
++
++        return new PacketSlotClickOrigin(
++                player,
++                currentItem,
++                InventoryType.SlotType.CONTAINER,
++                InventoryAction.PICKUP_ALL,
++                -1,
++                54,
++                9,
++                null,
++                "LEFT",
++                true,
++                false,
++                false,
++                false,
++                false,
++                false,
++                true);
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/SlotClickContextTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/SlotClickContextTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..6d3af742841c25b0293da451932e16a6338a7ffb
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/SlotClickContextTest.java
+@@ -0,0 +1,91 @@
++package me.devnatan.inventoryframework.context;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import me.devnatan.inventoryframework.ViewContainer;
++import me.devnatan.inventoryframework.Viewer;
++import org.bukkit.event.Event;
++import org.bukkit.event.inventory.ClickType;
++import org.bukkit.event.inventory.InventoryAction;
++import org.bukkit.event.inventory.InventoryClickEvent;
++import org.bukkit.event.inventory.InventoryType;
++import org.bukkit.inventory.InventoryView;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins the click origin as the single source of truth for whether a click is cancelled.
++ *
++ * <p>{@code GlobalClickInterceptor} re-derives the cancellation from {@link SlotClickContext#isCancelled()} and
++ * writes the result back to the origin. On the Bukkit backend a component handler runs before it and may cancel
++ * the click on the real event - {@code getClickOrigin().setCancelled(true)} or {@code setResult(DENY)} - without
++ * going through the context. If the context does not see that, the interceptor writes "not cancelled" back to
++ * the event and the player takes a real GUI item out of the inventory.
++ */
++class SlotClickContextTest {
++
++    @Test
++    void seesACancellationWrittenStraightToTheBukkitEvent() {
++        final InventoryClickEvent event = newClickEvent();
++        final SlotClickContext context = newContext(event);
++
++        event.setCancelled(true);
++
++        assertTrue(context.isCancelled(), "a cancel on the real event must be what the context reports");
++    }
++
++    /** {@code setResult(DENY)} is the way Bukkit's own javadoc recommends to stop a click. */
++    @Test
++    void seesADenialWrittenStraightToTheBukkitEvent() {
++        final InventoryClickEvent event = newClickEvent();
++        final SlotClickContext context = newContext(event);
++
++        event.setResult(Event.Result.DENY);
++
++        assertTrue(context.isCancelled());
++    }
++
++    /** A handler that allows the click again on the event must not be overruled by a stale flag either. */
++    @Test
++    void seesTheBukkitEventAllowedAgain() {
++        final InventoryClickEvent event = newClickEvent();
++        final SlotClickContext context = newContext(event);
++        context.setCancelled(true);
++
++        event.setCancelled(false);
++
++        assertFalse(context.isCancelled());
++    }
++
++    @Test
++    void writesItsOwnCancellationThroughToTheBukkitEvent() {
++        final InventoryClickEvent event = newClickEvent();
++        final SlotClickContext context = newContext(event);
++
++        context.setCancelled(true);
++
++        assertTrue(event.isCancelled());
++    }
++
++    private static InventoryClickEvent newClickEvent() {
++        final InventoryView view = mock(InventoryView.class);
++        when(view.convertSlot(anyInt())).thenReturn(0);
++
++        return new InventoryClickEvent(
++                view, InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PICKUP_ALL);
++    }
++
++    private static SlotClickContext newContext(InventoryClickEvent event) {
++        return new SlotClickContext(
++                0,
++                mock(IFRenderContext.class),
++                mock(Viewer.class),
++                mock(ViewContainer.class),
++                null,
++                event,
++                false);
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickTest.java
@@ -5686,6 +6195,183 @@ index 0000000000000000000000000000000000000000..395334ded24259b90dca028b8199e2f2
 +                        "identifier '" + identifier + "' is not a Bukkit ClickType (" + type + "/" + button + ")");
 +            }
 +        }
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickWriteBackTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickWriteBackTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d1e9c6c47bc7ecc9f4a66af07475bedd7d595ca
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiClickWriteBackTest.java
+@@ -0,0 +1,84 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++
++import me.devnatan.inventoryframework.context.PacketSlotClickOrigin;
++import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.InventoryAction;
++import org.bukkit.event.inventory.InventoryType;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins when a routed click may write the clicked item back into the viewer's real inventory.
++ *
++ * <p>The origin holds a copy of the bottom slot taken before the click pipeline ran. A view that removes the item
++ * through {@code player.getInventory()} - a sell or consume view - and leaves the click uncancelled must not get
++ * that copy written back over its change, or the player keeps the item and the reward.
++ */
++class PacketGuiClickWriteBackTest {
++
++    private static final int MAPPED_SLOT = 9;
++
++    @Test
++    void leavesTheInventoryAloneWhenTheHandlerNeverSetTheItem() {
++        final PacketSlotClickOrigin origin = newOrigin();
++
++        assertFalse(PacketGuiBackend.writesClickedItemBack(true, MAPPED_SLOT, origin));
++    }
++
++    @Test
++    void writesBackAnItemTheHandlerSetOnAnUncancelledBottomClick() {
++        final PacketSlotClickOrigin origin = newOrigin();
++        origin.setCurrentItem(null);
++
++        assertTrue(PacketGuiBackend.writesClickedItemBack(true, MAPPED_SLOT, origin));
++    }
++
++    @Test
++    void neverWritesBackACancelledClick() {
++        final PacketSlotClickOrigin origin = newOrigin();
++        origin.setCurrentItem(null);
++        origin.setCancelled(true);
++
++        assertFalse(PacketGuiBackend.writesClickedItemBack(true, MAPPED_SLOT, origin));
++    }
++
++    /** Top slots hold display items only; nothing a handler sets there may reach a real inventory. */
++    @Test
++    void neverWritesBackATopClick() {
++        final PacketSlotClickOrigin origin = newOrigin();
++        origin.setCurrentItem(null);
++
++        assertFalse(PacketGuiBackend.writesClickedItemBack(false, -1, origin));
++    }
++
++    @Test
++    void neverWritesBackASlotThatDoesNotMapToThePlayerInventory() {
++        final PacketSlotClickOrigin origin = newOrigin();
++        origin.setCurrentItem(null);
++
++        assertFalse(PacketGuiBackend.writesClickedItemBack(true, -1, origin));
++    }
++
++    private static PacketSlotClickOrigin newOrigin() {
++        return new PacketSlotClickOrigin(
++                mock(Player.class),
++                null,
++                InventoryType.SlotType.CONTAINER,
++                InventoryAction.PICKUP_ALL,
++                -1,
++                54,
++                MAPPED_SLOT,
++                null,
++                "LEFT",
++                true,
++                false,
++                false,
++                false,
++                false,
++                false,
++                true);
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseEventsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseEventsTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..2386b05a0c4c17f990c98e84ffbb164413fb51ad
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiCloseEventsTest.java
+@@ -0,0 +1,81 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import java.util.logging.Logger;
++import org.bukkit.entity.Player;
++import org.bukkit.event.inventory.InventoryCloseEvent;
++import org.bukkit.inventory.InventoryView;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins the {@link InventoryCloseEvent} the packet backend fires for plugins that do not know about the framework.
++ *
++ * <p>A packet GUI has no real container, so the server never fires a close event for it on its own. Other plugins
++ * still listen for one - and commonly branch on {@code getReason()} - so the reason has to say how the GUI went
++ * away, matching what Paper reports for a real container closed the same way.
++ */
++class PacketGuiCloseEventsTest {
++
++    @Test
++    void reportsAClientCloseAsClosedByThePlayer() {
++        assertEquals(InventoryCloseEvent.Reason.PLAYER, reasonFor(PacketGuiCloseOrigin.CLIENT));
++    }
++
++    @Test
++    void reportsAServerCloseAsClosedByAPlugin() {
++        assertEquals(InventoryCloseEvent.Reason.PLUGIN, reasonFor(PacketGuiCloseOrigin.SERVER));
++    }
++
++    /** Paper reports a container that makes way for another one - real or not - as {@code OPEN_NEW}. */
++    @Test
++    void reportsAReplacedGuiAsMakingWayForANewOne() {
++        assertEquals(InventoryCloseEvent.Reason.OPEN_NEW, reasonFor(PacketGuiCloseOrigin.REPLACED));
++        assertEquals(InventoryCloseEvent.Reason.OPEN_NEW, reasonFor(PacketGuiCloseOrigin.EXTERNAL_OPEN));
++    }
++
++    @Test
++    void reportsAQuitAsADisconnect() {
++        assertEquals(InventoryCloseEvent.Reason.DISCONNECT, reasonFor(PacketGuiCloseOrigin.QUIT));
++    }
++
++    @Test
++    void reportsAWorldChangeAsATeleport() {
++        assertEquals(InventoryCloseEvent.Reason.TELEPORT, reasonFor(PacketGuiCloseOrigin.WORLD_CHANGE));
++    }
++
++    @Test
++    void reportsARespawnAsADeath() {
++        assertEquals(InventoryCloseEvent.Reason.DEATH, reasonFor(PacketGuiCloseOrigin.RESPAWN));
++    }
++
++    @Test
++    void carriesTheViewItWasGiven() {
++        final InventoryView view = mock(InventoryView.class);
++
++        assertSame(view, PacketGuiCloseEvents.create(view, PacketGuiCloseOrigin.CLIENT).getView());
++    }
++
++    /**
++     * The GUI-shaped view comes from the server's menu API, which is not there on every server - and not in a
++     * unit test either, where it cannot even initialize. A close must still produce an event rather than fail.
++     */
++    @Test
++    void fallsBackToThePlayersOwnViewWhenNoMenuCanBeBuilt() {
++        final InventoryView ownView = mock(InventoryView.class);
++        final Player player = mock(Player.class);
++        when(player.getOpenInventory()).thenReturn(ownView);
++
++        final PacketGuiCloseEvents events = new PacketGuiCloseEvents(Logger.getAnonymousLogger());
++
++        assertSame(ownView, events.viewFor(player, 27, "Shop", "Shop"));
++        assertSame(ownView, events.viewFor(player, 54, null, null), "a second attempt must fall back as well");
++    }
++
++    private static InventoryCloseEvent.Reason reasonFor(PacketGuiCloseOrigin origin) {
++        return PacketGuiCloseEvents.create(mock(InventoryView.class), origin).getReason();
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFieldsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiConnectionFieldsTest.java

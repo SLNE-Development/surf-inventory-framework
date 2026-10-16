@@ -90,10 +90,13 @@ Startup log lines to look for:
   cancelled before vanilla sees them, so nothing moves by itself. Vanilla pickup/swap/quick-move semantics are
   deliberately not emulated.
 
-  A view can still act on bottom-inventory clicks: the click is delivered as an entity-container click, and
-  whatever `clickOrigin.currentItem` holds at the end of the CLICK pipeline is written back to the real slot —
-  **but only if the click ends the pipeline uncancelled.** Cancellation has two sources, and the second is easy
-  to miss:
+  A view can still act on bottom-inventory clicks: the click is delivered as an entity-container click, and an
+  item the handler set with `clickOrigin.setCurrentItem(...)` is written back to the real slot. Nothing is
+  written back unless a handler called `setCurrentItem` — the origin otherwise still holds the copy taken before
+  the pipeline ran, and writing that back would undo a change the handler made through `player.getInventory()`.
+  A handler may therefore change the clicked slot either way, but should not do both. The write-back also
+  happens **only if the click ends the pipeline uncancelled.** Cancellation has two sources, and the second is
+  easy to miss:
 
   1. the handler itself calling `setCancelled(true)`, and
   2. the **view's configuration**: `GlobalClickInterceptor` cancels every click on a view built with
@@ -111,15 +114,27 @@ Startup log lines to look for:
   The negative slot is what separates these from their in-window meaning — `THROW` on a real slot is the drop
   key and stays denied, and drag (`QUICK_CRAFT`) carries a negative slot too but is never treated as a click.
   Consumers see such a click as `ClickType.LEFT`/`RIGHT` with `SlotType.OUTSIDE`, matching the Bukkit backend.
-- **No Bukkit `InventoryOpenEvent` or `InventoryCloseEvent` is fired for a packet GUI.** There is no real
-  inventory to fire them for, and the inbound close packet is cancelled before vanilla sees it. A view's own
-  `onClose` is unaffected — the framework's CLOSE pipeline runs exactly as before — but a plugin that listens
-  for `InventoryCloseEvent` to notice a GUI closing will not hear about packet GUIs. Use the framework's own
-  close callback instead.
+- **The backend fires `InventoryCloseEvent` itself; `InventoryOpenEvent` is not fired.** The server has no
+  container open for a packet GUI, so it never fires either event on its own. Plugins that do not depend on the
+  framework still listen for the close event, so the backend fires one whenever a session ends and the view's
+  CLOSE pipeline runs: on ESC, `closeForPlayer()`, `Player#closeInventory()`, opening another view or a real
+  inventory, quit, world change and respawn. It fires on the viewer's thread, right before the CLOSE pipeline,
+  and `CloseContext#getPlatformEvent()` returns that same event, as on the Bukkit backend.
 
-  Up to `7f808d9` the close packet was let through, which made vanilla run its close handling against the
-  player's *own* inventory menu; the resulting `InventoryCloseEvent` therefore described the player's inventory
-  rather than any GUI. Anything that relied on it was reacting to a misleading event, not a useful one.
+  The event carries a real chest view built by the server's menu API (`MenuType`) and never opened. It has the
+  GUI's size and title — an Adventure title is passed through as a component on Paper — but **an empty top
+  inventory and no holder**: GUI display items are never copied into a real inventory. Having no holder is
+  also what keeps the framework's own close listener, which only reacts to inventories held by a render
+  context, from running the CLOSE pipeline a second time. On a server without the menu API the event carries the
+  viewer's own inventory view instead, and that is logged once.
+
+  On Paper, `getReason()` says how the GUI went away, matching what Paper reports for a real container closed
+  the same way: `PLAYER` (ESC), `PLUGIN` (closed by code), `OPEN_NEW` (replaced by another view or a real
+  inventory), `DISCONNECT`, `TELEPORT` (world change) and `DEATH` (respawn).
+
+  No event fires when a session is dropped without its close handlers — on plugin shutdown, or when the
+  viewer's scheduler refuses the task. `Player#closeInventory()` additionally makes Paper fire its own close
+  event for the player's crafting view, exactly as it does when no GUI is open at all.
 
 - **`RenderContext#getInventory()` throws** `UnsupportedOperationException` in packet mode. Probe with
   `RenderContext#isBackedByRealInventory()` first.
@@ -166,6 +181,8 @@ than by watching the screen.
 | Double-click denial | Denied, no callback, full resync | 2026-07-28 | OK — `PICKUP_ALL -> denied, full resync` *(log)* |
 | PacketLore on inventory items | An enchanted item in the viewer's inventory shows its lore in the GUI, exactly once | 2026-07-29 | OK — decorated once, also after the mirror was removed in `891b7c0` |
 | Close handling | ESC closes the GUI and fires `onClose` exactly once | | |
+| Close event for other plugins | A plain Bukkit listener receives one `InventoryCloseEvent` for the GUI per close, with the GUI's title, size and the matching `getReason()`, and an empty top inventory; `onClose` still fires exactly once | | |
+| Bottom click write-back | A view that clears the clicked slot through `player.getInventory()` and leaves the click uncancelled does not get the item back | | |
 | Player quit cleanup | Session and viewer are removed, `onClose` fires once | | |
 | External inventory open cleanup | Opening a real chest finalizes the packet session | | |
 | Shift-click | **Changed:** top-slot shift-clicks are *routed* to the view, not denied; the packet is still cancelled | | |
