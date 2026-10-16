@@ -30,16 +30,32 @@ val isWindows = System.getProperty("os.name")
     .lowercase()
     .contains("windows")
 
-val gradlew = if (isWindows) "gradlew.bat" else "./gradlew"
+// The wrapper is addressed by absolute path: `cmd /c gradlew.bat` resolves against PATH rather than the
+// task's workingDir and fails with "gradlew.bat is either misspelled or could not be found".
+val targetDir = layout.projectDirectory.dir("inventory-framework")
+val gradlew = targetDir.file(if (isWindows) "gradlew.bat" else "gradlew").asFile.absolutePath
 
-listOf("shadowJar", "publish").forEach { taskName ->
+// `test` is already taken by the `java` plugin on this project, so the delegating task carries a distinct
+// name. It is what CI runs to verify a pull request.
+val delegatedTasks = mapOf(
+    "shadowJar" to "shadowJar",
+    "publish" to "publish",
+    "publishToMavenLocal" to "publishToMavenLocal",
+    "testPatched" to "test",
+)
+
+delegatedTasks.forEach { (taskName, delegate) ->
     tasks.register<Exec>(taskName) {
-        group = if (taskName == "shadowJar") "build" else "publishing"
-        description = "Runs './gradlew $taskName' inside inventory-framework."
+        group = when (taskName) {
+            "shadowJar" -> "build"
+            "testPatched" -> "verification"
+            else -> "publishing"
+        }
+        description = "Runs './gradlew $delegate' inside inventory-framework."
 
         dependsOn("applyPatches")
-        workingDir = layout.projectDirectory.dir("inventory-framework").asFile
-        val args = listOf(taskName)
+        workingDir = targetDir.asFile
+        val args = listOf(delegate)
 
         if (isWindows) {
             commandLine("cmd", "/c", gradlew, *args.toTypedArray())
