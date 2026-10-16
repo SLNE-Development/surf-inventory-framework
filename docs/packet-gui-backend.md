@@ -195,6 +195,9 @@ than by watching the screen.
 | No GUI display items in real server inventory contents | `/invsee` or an inventory dump shows no GUI icons in any real inventory | | |
 | Window id collision | Opening a GUI while a real chest is open closes the chest and never reuses its window id | | Range guard unit-tested (ids 101–127 vs vanilla's 1–100); end-to-end path not run |
 | World change / respawn | Session is finalized, no stale viewer keeps receiving GUI packets | | |
+| Refresh by reopening from a click | A button whose handler reopens its own view (same rows and title) keeps its icon after the click | | |
+| Redirect to a view of another size | A view that opens a differently sized view right away leaves the second one working, not a dead window | | |
+| GUIs of two plugins | Moving from one plugin's GUI to another's routes clicks only to the GUI on screen | | |
 
 The rows marked **Changed** deviate from the original AGENTS.md expectation. Those click modes are deliberately
 routed into the click API rather than denied, because the packet is already cancelled at the listener, so
@@ -245,6 +248,26 @@ the id still fits in a signed byte, which older protocol versions require.
 `PacketViewerWindowTracker` is skipped on top of that. Against vanilla that is redundant; it still matters
 against another plugin that opens its own fake window in the same range.
 
+Every `ViewFrame` registers a backend of its own, so a server with several plugins on the same
+InventoryFramework copy has several. They all allocate from **one shared counter**: with a counter each, two
+frames handed out the same first id, and a viewer moving from one plugin's GUI to another's within a tick ended
+up with both backends claiming the clicks on that window. A separately shaded and relocated copy of the
+framework has a counter of its own and is not covered.
+
+### Telling a GUI's own open packet from a real container
+
+The open-screen packet of a packet GUI goes through the same outbound path as vanilla's and only reaches the
+listener once netty encodes it. By then a newer session may already own the viewer — a view that immediately
+opens another one of a different size, or a second frame opening its GUI in the same tick — so comparing the
+packet against the current window would read it as a real container taking the screen and tear the newer
+session down.
+
+`PacketGuiSentOpens`, shared by every backend, records each sent open together with the sequence number of the
+session that sent it. Sequence numbers come from one counter for all sessions, so they order sessions across
+frames. An observed open that is older than the viewer's current session, or is that session's own, is ignored;
+a newer one means another frame's GUI has the screen and closes the session with reason `OPEN_NEW`. Only an
+open no packet GUI sent is treated as an external container.
+
 ### Window reuse
 
 InventoryFramework builds a new context and a new container on every open, including when a view reopens
@@ -258,9 +281,18 @@ changed. A different title or row count still fails `PacketGuiRender#sameWindow`
 reopen. The container state id travels with the window rather than the session, because the client echoes it
 back and it has to keep increasing for as long as the window lives.
 
+So does every repair the old session still owed. Diffing against its applied render assumes the client shows
+exactly that, which is not true while a repair is pending. The common case is a click handler that reopens its
+view to refresh it: the client has already predicted the pickup and shows the clicked slot empty, and the
+repair for it is requested only after the handler returned — against a session that no longer owns the window.
+Such a request goes to the session that took the window over; one for a session whose successor opened a window
+of its own is dropped, since the client no longer shows that slot.
+
 While a viewer is inside `open()`, outbound close packets are dropped rather than forwarded. The client does
 not check which window a close belongs to — it closes whatever is on screen — and a session that reuses a
-window sends no open-screen packet afterwards that would put it back.
+window sends no open-screen packet afterwards that would put it back. The marker counts opens rather than
+being a flag: each open lifts its share a turn of the connection's event loop after it returns, and a second
+open that starts before that must not have its marker lifted by the first one's release.
 
 ## Scheduling
 

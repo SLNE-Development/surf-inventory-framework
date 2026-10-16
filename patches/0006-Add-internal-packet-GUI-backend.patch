@@ -780,21 +780,42 @@ index 0000000000000000000000000000000000000000..df6c27e5c7cc7dd46f087af21d9d8133
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
-index b89eae09cdfbbc5c01ef378071801f9add48af63..992fbb75c57e056a275b5d48f0817a4ee9f02122 100644
+index b89eae09cdfbbc5c01ef378071801f9add48af63..58162a15c47cca0f82aef89de771bee19383fd38 100644
 --- a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/context/RenderContext.java
-@@ -63,12 +63,31 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
+@@ -63,12 +63,52 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
  
      @Override
      public void updateTitleForPlayer(@NotNull String title, @NotNull Player player) {
 -        ((BukkitViewContainer) getContainer()).changeTitle(title, player);
-+        getContainerOrThrow().changeTitle(title, viewerOf(player));
++        changeTitleFor(title, player);
      }
  
      @Override
      public void resetTitleForPlayer(@NotNull Player player) {
 -        ((BukkitViewContainer) getContainer()).changeTitle(null, player);
-+        getContainerOrThrow().changeTitle(null, viewerOf(player));
++        changeTitleFor(null, player);
++    }
++
++    /**
++     * Changes the title one player sees.
++     *
++     * <p>The Bukkit container takes any player, as it always has, and retitles whatever that player has open.
++     * Views rely on that from tasks that outlive the viewer, such as a countdown that keeps running after the
++     * player closed the view. A packet container can only retitle a window it sent, which a player who is not
++     * viewing this context does not have, so for them the call does nothing.
++     */
++    private void changeTitleFor(@Nullable Object title, @NotNull Player player) {
++        final ViewContainer container = getContainerOrThrow();
++        if (container instanceof BukkitViewContainer) {
++            ((BukkitViewContainer) container).changeTitle(title, player);
++            return;
++        }
++
++        final Viewer viewer = viewerOf(player);
++        if (viewer != null) {
++            container.changeTitle(title, viewer);
++        }
 +    }
 +
 +    /**
@@ -805,7 +826,7 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..992fbb75c57e056a275b5d48f0817a4e
 +        return getContainerOrThrow() instanceof BukkitViewContainer;
 +    }
 +
-+    private @NotNull Viewer viewerOf(@NotNull Player player) {
++    private @Nullable Viewer viewerOf(@NotNull Player player) {
 +        for (final Viewer viewer : getViewers()) {
 +            if (viewer instanceof BukkitViewer
 +                    && ((BukkitViewer) viewer).getPlayer().getUniqueId().equals(player.getUniqueId())) {
@@ -813,11 +834,11 @@ index b89eae09cdfbbc5c01ef378071801f9add48af63..992fbb75c57e056a275b5d48f0817a4e
 +            }
 +        }
 +
-+        throw new IllegalArgumentException("Player is not a viewer of this context: " + player.getName());
++        return null;
      }
  
      /**
-@@ -167,8 +186,20 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
+@@ -167,8 +207,20 @@ public final class RenderContext extends PlatformRenderContext<BukkitItemCompone
          return "RenderContext{" + "player=" + player + "} " + super.toString();
      }
  
@@ -1364,10 +1385,10 @@ index 0000000000000000000000000000000000000000..38305f83a335cebcdd6e9a1a77442c0b
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3aece5ae6b2
+index 0000000000000000000000000000000000000000..ac49e748383ba224128304750e277302abb20cfa
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiBackend.java
-@@ -0,0 +1,1638 @@
+@@ -0,0 +1,1703 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.PacketEvents;
@@ -1441,18 +1462,19 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +    private final PacketGuiCloseEvents closeEvents;
 +    private final ConcurrentMap<UUID, PacketGuiSession> sessions = new ConcurrentHashMap<>();
 +    private final ConcurrentMap<UUID, PacketViewerWindowTracker> windowTrackers = new ConcurrentHashMap<>();
-+    private final AtomicInteger nextWindowId = PacketGuiWindowIds.newCounter();
++    private final AtomicInteger nextWindowId = PacketGuiWindowIds.sharedCounter();
++    private final PacketGuiSentOpens sentOpens = PacketGuiSentOpens.shared();
 +    private final Set<String> reportedUnsupportedTypes = ConcurrentHashMap.newKeySet();
 +
 +    /**
-+     * Viewers currently inside {@link #open}. Outbound close packets seen while a viewer is in this set were
-+     * caused by our own open sequence tearing down the previous view, not by the viewer closing the new one,
-+     * and are dropped rather than forwarded.
++     * Viewers currently inside {@link #open}. Outbound close packets seen while a viewer is marked were caused
++     * by our own open sequence tearing down the previous view, not by the viewer closing the new one, and are
++     * dropped rather than forwarded.
 +     *
-+     * <p>Read from netty threads, so membership deliberately outlives {@code open()} by one turn of the
++     * <p>Read from netty threads, so each open's marker deliberately outlives {@code open()} by one turn of the
 +     * connection's event loop - see {@link #releaseOpeningMarker}.
 +     */
-+    private final Set<UUID> openingViewers = ConcurrentHashMap.newKeySet();
++    private final PacketGuiOpenMarkers openingViewers = new PacketGuiOpenMarkers();
 +
 +    private volatile PacketGuiNativeOutboundSender nativeOutbound;
 +    private PacketListenerCommon listener;
@@ -1579,7 +1601,7 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +        }
 +        sessions.clear();
 +        windowTrackers.clear();
-+        openingViewers.clear();
++        openingViewers.clearAll();
 +        nativeOutbound = null;
 +    }
 +
@@ -1592,7 +1614,7 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +        // whether this backend really finalized the session.
 +        final boolean closed = closeSession(session, false, PacketGuiCloseOrigin.QUIT, true, true);
 +        windowTrackers.remove(player.getUniqueId());
-+        openingViewers.remove(player.getUniqueId());
++        openingViewers.clear(player.getUniqueId());
 +        return closed;
 +    }
 +
@@ -1658,10 +1680,10 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +        // routinely ends up calling Player#closeInventory. None of it may be mistaken for the viewer closing
 +        // the window being opened.
 +        //
-+        // The close pipeline may also re-enter open() for the same viewer. Only the outermost invocation may
-+        // lift the marker: an inner one clearing it would leave the rest of the outer sequence unguarded,
-+        // which is precisely the window this guard exists to cover.
-+        final boolean outermostOpen = openingViewers.add(player.getUniqueId());
++        // The close pipeline may also re-enter open() for the same viewer, and a second open can start before
++        // this one's deferred release has run. The marker counts opens, so each one takes and lifts only its
++        // own, and the viewer stays marked until the last of them has been released.
++        openingViewers.enter(player.getUniqueId());
 +        try {
 +            final PacketViewerWindowTracker windowTracker = windowTrackerFor(player.getUniqueId());
 +            final int externalWindowId = windowTracker.openWindowId();
@@ -1690,6 +1712,7 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +                    reuseWindow
 +                            ? replaced.windowId()
 +                            : PacketGuiWindowIds.allocate(nextWindowId, externalWindowId),
++                    sentOpens.nextSequence(),
 +                    container,
 +                    windowTracker);
 +            if (reuseWindow) {
@@ -1715,17 +1738,22 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +                return;
 +            }
 +
-+            renderSession(session, !reuseWindow, !reuseWindow);
++            // Includes whatever the replaced session still owed the window it handed over.
++            final PacketGuiRenderRequests.RenderRequest inherited = session.consumeRenderRequest();
++            renderSession(
++                    session,
++                    inherited.forceReopen() || !reuseWindow,
++                    inherited.hardResync() || !reuseWindow,
++                    inherited.forcedTopSlotRepairs(),
++                    inherited.playerSlotRepairs());
 +        } finally {
-+            if (outermostOpen) {
-+                releaseOpeningMarker(player, user);
-+            }
++            releaseOpeningMarker(player, user);
 +        }
 +    }
 +
 +    /**
-+     * Lifts the open-in-progress marker, but not before the client connection has processed everything
-+     * {@link #open} queued on it.
++     * Releases this open's share of the open-in-progress marker, but not before the client connection has
++     * processed everything {@link #open} queued on it.
 +     *
 +     * <p>A close packet emitted during the open sequence is written from the viewer's thread and observed on
 +     * the connection's event loop, because the server defers sends made off that loop. Clearing the marker
@@ -1751,16 +1779,16 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +        final UUID viewerId = player.getUniqueId();
 +        final Object channel = user.getChannel();
 +        if (channel == null || !ChannelHelper.isOpen(channel)) {
-+            openingViewers.remove(viewerId);
++            openingViewers.release(viewerId);
 +            return;
 +        }
 +
 +        try {
-+            ChannelHelper.runInEventLoop(channel, () -> openingViewers.remove(viewerId));
++            ChannelHelper.runInEventLoop(channel, () -> openingViewers.release(viewerId));
 +        } catch (final RuntimeException exception) {
 +            // Never leave the marker behind: while it is set, outbound close packets for this viewer are
 +            // dropped, so a stuck marker would make the viewer impossible to close out of anything.
-+            openingViewers.remove(viewerId);
++            openingViewers.release(viewerId);
 +        }
 +    }
 +
@@ -1893,6 +1921,42 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +        closeTrackedWindow(user.getUUID(), windowId);
 +    }
 +
++    /**
++     * Handles an outbound open-screen packet.
++     *
++     * <p>Packet GUIs open their windows through the same outbound path, and their packets only arrive here once
++     * netty encodes them. Comparing against the current session's window id is not enough: a view that
++     * immediately opens another one of a different size publishes the second session before the first open is
++     * encoded, and that first open would read as a real container taking the screen - tearing down the session
++     * the viewer is about to look at. {@link PacketGuiSentOpens} says which session sent the packet instead, and
++     * only a packet GUI that opened <em>after</em> this session - another view frame's - replaces it.
++     */
++    void handleOpenWindowPacket(User user, int windowId) {
++        if (user == null || user.getUUID() == null) {
++            return;
++        }
++
++        final long sentSequence = sentOpens.observe(user.getUUID(), windowId);
++        if (sentSequence == PacketGuiSentOpens.NONE) {
++            handleExternalInventoryOpen(user, windowId);
++            return;
++        }
++
++        final PacketGuiSession session = sessions.get(user.getUUID());
++        if (isTracked(session) && supersedes(sentSequence, session)) {
++            session.closeRequested(true);
++            runOnPlayer(session, () -> closeSession(session, false, PacketGuiCloseOrigin.EXTERNAL_OPEN, true, true));
++        }
++    }
++
++    /**
++     * Whether a packet GUI open, sent by the session with sequence {@code sentSequence}, takes the screen from
++     * {@code session}. Its own opens and those of the sessions it replaced do not.
++     */
++    static boolean supersedes(long sentSequence, PacketGuiSession session) {
++        return sentSequence > session.openSequence();
++    }
++
 +    void handleExternalInventoryOpen(User user, int windowId) {
 +        if (user == null || user.getUUID() == null) {
 +            return;
@@ -1921,7 +1985,7 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +            return false;
 +        }
 +
-+        if (openingViewers.contains(user.getUUID())) {
++        if (openingViewers.isOpening(user.getUUID())) {
 +            // Emitted by our own open sequence - by closing a real menu, or by the replaced view's close
 +            // handlers - not by the viewer closing the window being opened. The client does not check which
 +            // window a close belongs to, it closes whatever is on screen, so this must not reach it: a view
@@ -1981,7 +2045,8 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +
 +        // The open marker is normally lifted through the connection's event loop. A channel that dies while
 +        // an open is in flight would leave it behind, and a stuck marker silently drops close packets.
-+        openingViewers.remove(viewerId);
++        openingViewers.clear(viewerId);
++        sentOpens.forget(viewerId);
 +    }
 +
 +    /**
@@ -2229,22 +2294,39 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +            boolean hardResync,
 +            PacketGuiRepairScope repairScope,
 +            PacketGuiClick click) {
-+        if (!isTracked(session) || session.closeRequested()) {
++        final PacketGuiSession target = renderTarget(session, sessions.get(session.viewerId()));
++        if (target == null) {
 +            return;
 +        }
 +
-+        if (!session.scheduleRender(forceReopen, hardResync, repairScope, click)) {
++        if (!target.scheduleRender(forceReopen, hardResync, repairScope, click)) {
 +            return;
 +        }
 +
-+        runOnPlayerNextTick(session, () -> {
-+            final PacketGuiRenderRequests.RenderRequest request = session.consumeRenderRequest();
-+            renderSession(session, request);
++        runOnPlayerNextTick(target, () -> {
++            final PacketGuiRenderRequests.RenderRequest request = target.consumeRenderRequest();
++            renderSession(target, request);
 +        });
 +    }
 +
-+    private void renderSession(PacketGuiSession session, boolean forceReopen, boolean hardResync) {
-+        renderSession(session, forceReopen, hardResync, new boolean[0], new int[0]);
++    /**
++     * The session that has to render a request made against {@code session}: the session itself while it is
++     * live, or the session that took its window over.
++     *
++     * <p>A click handler that reopens its view replaces the clicked session before the click's repair is
++     * requested. If the new view has the same shape it keeps the window and diffs against what the old session
++     * last sent, so the repair - the client has already predicted the pickup and shows the slot empty - is
++     * still owed, just by a different session. Any other successor opened a window of its own, and the client
++     * no longer shows the slot the repair was for.
++     *
++     * @param current The viewer's session as of now, or {@code null}.
++     */
++    static PacketGuiSession renderTarget(PacketGuiSession session, PacketGuiSession current) {
++        if (current == null || current.closed() || current.closeRequested()) {
++            return null;
++        }
++
++        return current == session || current.windowId() == session.windowId() ? current : null;
 +    }
 +
 +    private void renderSession(PacketGuiSession session, PacketGuiRenderRequests.RenderRequest request) {
@@ -2328,7 +2410,11 @@ index 0000000000000000000000000000000000000000..30db5de3242abe0db65500b9ab50c3ae
 +                : new WrapperPlayServerOpenWindow(
 +                        session.windowId(), "minecraft:chest", render.title(), render.size(), 0);
 +
-+        plan.add((sender, player) -> session.user().sendPacket(packet));
++        plan.add((sender, player) -> {
++            // Recorded first: the listener can see the packet as soon as it is handed over.
++            sentOpens.sent(session.viewerId(), session.windowId(), session.openSequence());
++            session.user().sendPacket(packet);
++        });
 +    }
 +
 +    private void addWindowItems(
@@ -4159,12 +4245,61 @@ index 0000000000000000000000000000000000000000..08b3d13cb9ed55cdc5ae754a4868bf8c
 +    }
 +
 +}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiOpenMarkers.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiOpenMarkers.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3df653e54682971a60ab89f4473276643ff86da4
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiOpenMarkers.java
+@@ -0,0 +1,43 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.util.UUID;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.ConcurrentMap;
++
++/**
++ * Which viewers are inside a packet GUI open sequence.
++ *
++ * <p>A count per viewer rather than a flag. Every open enters once and releases once, and its release is
++ * deferred by a turn of the connection's event loop, so a second open for the same viewer can start before the
++ * first open's release has run. With a flag the second open would find the marker already set and never take one
++ * of its own, and the first open's release would then lift the marker while the second open's packets are still
++ * in flight. Counting also makes nested opens - a close handler that opens another view - need no special case.
++ *
++ * <p>Read from netty threads and written from the viewer's thread and the event loop.
++ */
++final class PacketGuiOpenMarkers {
++
++    private final ConcurrentMap<UUID, Integer> opens = new ConcurrentHashMap<>();
++
++    void enter(UUID viewerId) {
++        opens.merge(viewerId, 1, Integer::sum);
++    }
++
++    /** Ends one open. A release for a viewer that was cleared in the meantime is ignored. */
++    void release(UUID viewerId) {
++        opens.computeIfPresent(viewerId, (ignored, count) -> count > 1 ? count - 1 : null);
++    }
++
++    boolean isOpening(UUID viewerId) {
++        return opens.containsKey(viewerId);
++    }
++
++    /** Drops every open of a viewer whose connection is gone, so no stuck marker can outlive it. */
++    void clear(UUID viewerId) {
++        opens.remove(viewerId);
++    }
++
++    void clearAll() {
++        opens.clear();
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d299fdeba78dc2a8dbf5097de57410f472d52f15
+index 0000000000000000000000000000000000000000..84aad3fc8ee33c24c97316816f129e54792d192f
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiPacketListener.java
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,142 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.event.PacketListenerAbstract;
@@ -4274,13 +4409,11 @@ index 0000000000000000000000000000000000000000..d299fdeba78dc2a8dbf5097de57410f4
 +        }
 +
 +        if (packetType == PacketType.Play.Server.OPEN_WINDOW) {
-+            // The backend opens its own windows through this same outbound path, so its packets come back
-+            // through here. Filtering them out is what the id check is for - a real container can never carry
-+            // a GUI window id, because PacketGuiWindowIds allocates outside the range vanilla uses.
++            // Packet GUIs open their own windows through this same outbound path, so their packets come back
++            // through here - possibly after a newer session was already published. The backend works out which
++            // GUI sent the packet rather than comparing it with the current window.
 +            final WrapperPlayServerOpenWindow packet = new WrapperPlayServerOpenWindow(event);
-+            if (!backend.isGuiWindow(user, packet.getContainerId())) {
-+                backend.handleExternalInventoryOpen(user, packet.getContainerId());
-+            }
++            backend.handleOpenWindowPacket(user, packet.getContainerId());
 +            return;
 +        }
 +
@@ -4401,10 +4534,10 @@ index 0000000000000000000000000000000000000000..edd29c3d67e3f5e7921f1ff9487f3c2d
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequests.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequests.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c8a180b34efab4abc2e0c7dea01484c3f718a8ba
+index 0000000000000000000000000000000000000000..885ae1faaedf8cbea6a50861400ee822c01c7854
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequests.java
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,206 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.Arrays;
@@ -4476,6 +4609,31 @@ index 0000000000000000000000000000000000000000..c8a180b34efab4abc2e0c7dea01484c3
 +        Arrays.fill(playerSlotRepairs, false);
 +        playerSlotRepairCount = 0;
 +        return request;
++    }
++
++    /**
++     * Merges a frame taken from another session into the pending one, without touching the latch: the caller
++     * renders the result itself. Top-slot repairs addressed to a window of another size cannot be mapped and
++     * turn into a full resync instead.
++     */
++    synchronized void absorb(RenderRequest request) {
++        forceReopen |= request.forceReopen();
++        hardResync |= request.hardResync();
++
++        final boolean[] topRepairs = request.forcedTopSlotRepairs();
++        if (topRepairs.length == topSize) {
++            for (int slot = 0; slot < topSize; slot++) {
++                if (topRepairs[slot]) {
++                    scheduleTopSlotRepair(slot);
++                }
++            }
++        } else if (topRepairs.length > 0) {
++            hardResync = true;
++        }
++
++        for (final int playerSlot : request.playerSlotRepairs()) {
++            schedulePlayerSlotRepair(playerSlot);
++        }
 +    }
 +
 +    /**
@@ -4631,12 +4789,110 @@ index 0000000000000000000000000000000000000000..862304c2a30d0bae12cb416567801644
 +        return this == TOP_SLOT_CURSOR_AND_OFFHAND;
 +    }
 +}
+diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSentOpens.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSentOpens.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..cd989846b55cb48ad5915ab7558c2572b86db6ae
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSentOpens.java
+@@ -0,0 +1,92 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.UUID;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.ConcurrentMap;
++import java.util.concurrent.atomic.AtomicLong;
++
++/**
++ * The open-screen packets packet GUIs have sent and the outbound listeners have not seen yet, so a listener can
++ * tell a packet GUI's own window from a real container.
++ *
++ * <p>An open packet is queued from the viewer's thread and only reaches the outbound listener once netty encodes
++ * it, by which time a newer session may already own the viewer. Each open therefore carries the sequence number
++ * of the session that sent it, drawn from one counter for every session there is: an open that is older than
++ * the viewer's current session belongs to a GUI that has already been replaced and must be ignored, while a newer
++ * one means a GUI opened later - by another view frame - has taken the screen.
++ *
++ * <p>One instance is {@link #shared() shared} by every backend, because every view frame registers a backend of
++ * its own and all of their listeners see the same packets.
++ */
++final class PacketGuiSentOpens {
++
++    /** What {@link #observe} returns for an open no packet GUI sent. */
++    static final long NONE = -1;
++
++    private static final PacketGuiSentOpens SHARED = new PacketGuiSentOpens();
++
++    private final AtomicLong sequences = new AtomicLong();
++    private final ConcurrentMap<UUID, List<SentOpen>> pending = new ConcurrentHashMap<>();
++
++    static PacketGuiSentOpens shared() {
++        return SHARED;
++    }
++
++    /** The sequence number for a new session, greater than that of every session created before it. */
++    long nextSequence() {
++        return sequences.incrementAndGet();
++    }
++
++    /** Records an open packet right before it is handed to the connection. */
++    void sent(UUID viewerId, int windowId, long sequence) {
++        final List<SentOpen> opens = pending.computeIfAbsent(viewerId, ignored -> new ArrayList<>());
++        synchronized (opens) {
++            opens.add(new SentOpen(windowId, sequence));
++        }
++    }
++
++    /**
++     * The sequence of the session that sent an open packet the listener just saw, or {@link #NONE} if no packet
++     * GUI sent it.
++     *
++     * <p>Not consumed, because every view frame's listener sees the same packet. The opens sent before it are
++     * dropped instead: packets reach a connection in the order they were sent, so once this one is seen, every
++     * earlier one has been seen too.
++     */
++    long observe(UUID viewerId, int windowId) {
++        final List<SentOpen> opens = pending.get(viewerId);
++        if (opens == null) {
++            return NONE;
++        }
++
++        synchronized (opens) {
++            for (int index = 0; index < opens.size(); index++) {
++                final SentOpen open = opens.get(index);
++                if (open.windowId == windowId) {
++                    // By position, not by sequence: the order on the wire is the order of sending.
++                    opens.subList(0, index).clear();
++                    return open.sequence;
++                }
++            }
++        }
++        return NONE;
++    }
++
++    /** Drops everything recorded for a viewer whose connection is gone. */
++    void forget(UUID viewerId) {
++        pending.remove(viewerId);
++    }
++
++    private static final class SentOpen {
++
++        private final int windowId;
++        private final long sequence;
++
++        private SentOpen(int windowId, long sequence) {
++            this.windowId = windowId;
++            this.sequence = sequence;
++        }
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..68864c7b5fe8a109c1cbaebc5815022a933e5677
+index 0000000000000000000000000000000000000000..4f374c31127d84b88943c999f88d7840947a9de5
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSession.java
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,175 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import com.github.retrooper.packetevents.protocol.player.User;
@@ -4661,6 +4917,7 @@ index 0000000000000000000000000000000000000000..68864c7b5fe8a109c1cbaebc5815022a
 +    private final Player player;
 +    private final User user;
 +    private final int windowId;
++    private final long openSequence;
 +    private final PacketViewContainer container;
 +    private final PacketViewerWindowTracker windowTracker;
 +    private final PacketGuiRenderRequests renderRequests;
@@ -4675,6 +4932,7 @@ index 0000000000000000000000000000000000000000..68864c7b5fe8a109c1cbaebc5815022a
 +            BukkitViewer viewer,
 +            User user,
 +            int windowId,
++            long openSequence,
 +            PacketViewContainer container,
 +            PacketViewerWindowTracker windowTracker) {
 +        this.viewer = viewer;
@@ -4682,6 +4940,7 @@ index 0000000000000000000000000000000000000000..68864c7b5fe8a109c1cbaebc5815022a
 +        this.viewerId = player.getUniqueId();
 +        this.user = user;
 +        this.windowId = windowId;
++        this.openSequence = openSequence;
 +        this.container = container;
 +        this.windowTracker = windowTracker;
 +        this.renderRequests = new PacketGuiRenderRequests(container.getSize());
@@ -4709,6 +4968,14 @@ index 0000000000000000000000000000000000000000..68864c7b5fe8a109c1cbaebc5815022a
 +
 +    int windowId() {
 +        return windowId;
++    }
++
++    /**
++     * When this session was created, relative to every other packet GUI session. Its open packets carry it, so
++     * a late one can be told apart from a GUI that opened after this one - see {@link PacketGuiSentOpens}.
++     */
++    long openSequence() {
++        return openSequence;
 +    }
 +
 +    PacketViewContainer container() {
@@ -4761,10 +5028,15 @@ index 0000000000000000000000000000000000000000..68864c7b5fe8a109c1cbaebc5815022a
 +     * <p>The applied render so the first render diffs against what the client actually shows instead of
 +     * resending everything, and the container state id because the client echoes it back and it has to keep
 +     * increasing for as long as the window lives - it belongs to the window, not to the session.
++     *
++     * <p>Also every render the previous session still owed. Diffing against its applied render assumes the
++     * client shows exactly that, which is not true while a repair is pending - a click the client predicted, or a
++     * denied interaction waiting for its resync. The previous session's own render task finds nothing left.
 +     */
 +    synchronized void adoptWindowStateFrom(PacketGuiSession previous) {
 +        this.appliedRender = previous.appliedRender();
 +        this.stateId = previous.currentStateId();
++        renderRequests.absorb(previous.consumeRenderRequest());
 +    }
 +
 +    synchronized long nextSendGeneration() {
@@ -4798,10 +5070,10 @@ index 0000000000000000000000000000000000000000..68864c7b5fe8a109c1cbaebc5815022a
 +}
 diff --git a/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d5e26cf2c65956f7477c21529c4a520487ac2aa8
+index 0000000000000000000000000000000000000000..b72535e7c689a547562f07247057383b80b60369
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/main/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIds.java
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,78 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import java.util.concurrent.atomic.AtomicInteger;
@@ -4831,6 +5103,8 @@ index 0000000000000000000000000000000000000000..d5e26cf2c65956f7477c21529c4a5204
 +     */
 +    static final int MAX_WINDOW_ID = 127;
 +
++    private static final AtomicInteger SHARED_COUNTER = newCounter();
++
 +    private PacketGuiWindowIds() {}
 +
 +    /**
@@ -4838,6 +5112,17 @@ index 0000000000000000000000000000000000000000..d5e26cf2c65956f7477c21529c4a5204
 +     */
 +    static AtomicInteger newCounter() {
 +        return new AtomicInteger(MIN_WINDOW_ID - 1);
++    }
++
++    /**
++     * The counter every backend allocates from.
++     *
++     * <p>Every view frame registers a backend of its own. With a counter each, two frames hand out the same id
++     * to a viewer that moves from one plugin's GUI to another's within a tick, and then both listeners claim
++     * the clicks on that window.
++     */
++    static AtomicInteger sharedCounter() {
++        return SHARED_COUNTER;
 +    }
 +
 +    /**
@@ -5861,6 +6146,141 @@ index 0000000000000000000000000000000000000000..6e48f6a60b6924d63bb9b3ae783a0003
 +                true);
 +    }
 +}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/RenderContextTitleTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/RenderContextTitleTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7bdd265d63afb5ab29c3d341cfb417de49a6ab74
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/RenderContextTitleTest.java
+@@ -0,0 +1,129 @@
++package me.devnatan.inventoryframework.context;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.UUID;
++import me.devnatan.inventoryframework.BukkitViewContainer;
++import me.devnatan.inventoryframework.BukkitViewer;
++import me.devnatan.inventoryframework.View;
++import me.devnatan.inventoryframework.ViewConfig;
++import me.devnatan.inventoryframework.ViewContainer;
++import me.devnatan.inventoryframework.ViewType;
++import me.devnatan.inventoryframework.Viewer;
++import me.devnatan.inventoryframework.internal.InventoryFactory;
++import org.bukkit.entity.Player;
++import org.bukkit.inventory.Inventory;
++import org.bukkit.inventory.InventoryHolder;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins how a per-player title change treats a player who is not viewing the context.
++ *
++ * <p>The classic Bukkit backend has always accepted any player and retitled whatever that player has open. Views
++ * rely on that from tasks that outlive the viewer - a countdown started in {@code onFirstRender} and never
++ * cancelled keeps calling {@code updateTitleForPlayer} after the player closed the view. Throwing there turns
++ * every tick of such a task into a stack trace.
++ */
++class RenderContextTitleTest {
++
++    @AfterEach
++    void restoreTheInventoryFactory() {
++        RecordingInventoryFactory.uninstall();
++    }
++
++    @Test
++    void retitlesAnyPlayerOnTheBukkitBackend() {
++        final RecordingInventoryFactory factory = RecordingInventoryFactory.install();
++        final Player stranger = player();
++        final RenderContext context =
++                context(new BukkitViewContainer(mock(Inventory.class), false, ViewType.CHEST, false));
++
++        context.updateTitleForPlayer("Countdown 3", stranger);
++        context.resetTitleForPlayer(stranger);
++
++        assertEquals(List.of("Countdown 3", "<reset>"), factory.titles);
++        assertSame(stranger, factory.lastTarget);
++    }
++
++    @Test
++    void ignoresAPlayerWhoIsNotViewingAPacketContainer() {
++        final ViewContainer container = mock(ViewContainer.class);
++        final RenderContext context = context(container);
++        final Player stranger = player();
++
++        assertDoesNotThrow(() -> context.updateTitleForPlayer("Countdown 3", stranger));
++        assertDoesNotThrow(() -> context.resetTitleForPlayer(stranger));
++        verify(container, never()).changeTitle(any(), any(Viewer.class));
++    }
++
++    @Test
++    void retitlesAViewerOfAPacketContainer() {
++        final ViewContainer container = mock(ViewContainer.class);
++        final Player player = player();
++        final BukkitViewer viewer = new BukkitViewer(player, null);
++        final RenderContext context = context(container, viewer);
++
++        context.updateTitleForPlayer("Countdown 3", player);
++
++        verify(container).changeTitle("Countdown 3", viewer);
++    }
++
++    private static Player player() {
++        final Player player = mock(Player.class);
++        when(player.getUniqueId()).thenReturn(UUID.randomUUID());
++        when(player.getName()).thenReturn("viewer");
++        return player;
++    }
++
++    private static RenderContext context(ViewContainer container, BukkitViewer... viewers) {
++        final Map<String, Viewer> indexed = new HashMap<>();
++        for (final BukkitViewer viewer : viewers) {
++            indexed.put(viewer.getId(), viewer);
++        }
++
++        final ViewConfig config = new ViewConfig(
++                "Shop", 27, ViewType.CHEST, new HashMap<>(), null, Collections.emptySet(), 0, 0, false);
++        return new RenderContext(UUID.randomUUID(), mock(View.class), config, container, indexed, null, null);
++    }
++
++    /** Stands in for the platform factory, whose real title update reaches into the server. */
++    private static final class RecordingInventoryFactory extends InventoryFactory {
++
++        private final List<String> titles = new ArrayList<>();
++        private Player lastTarget;
++
++        static RecordingInventoryFactory install() {
++            final RecordingInventoryFactory factory = new RecordingInventoryFactory();
++            instance = factory;
++            return factory;
++        }
++
++        static void uninstall() {
++            instance = null;
++        }
++
++        @Override
++        public Inventory createInventory(InventoryHolder holder, ViewType type, int size, Object title) {
++            throw new UnsupportedOperationException();
++        }
++
++        @Override
++        public void setInventoryTitle(Player player, Object newTitle) {
++            titles.add(newTitle == null ? "<reset>" : String.valueOf(newTitle));
++            lastTarget = player;
++        }
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/SlotClickContextTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/context/SlotClickContextTest.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..6d3af742841c25b0293da451932e16a6338a7ffb
@@ -6484,12 +6904,91 @@ index 0000000000000000000000000000000000000000..6dd7dbf5f4afe8afa8d0efa12c8cad01
 +        private final String name = "nothing usable here";
 +    }
 +}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiOpenMarkersTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiOpenMarkersTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..e183606f8ec4ed08066b5a921e88b8351d580057
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiOpenMarkersTest.java
+@@ -0,0 +1,73 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.UUID;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins the lifetime of the open-in-progress marker.
++ *
++ * <p>Each open lifts its marker through the connection's event loop, a turn after it returns. A second open for
++ * the same viewer can start before that removal ran. If the marker were a plain flag, the second open would find
++ * it already set and never lift its own, and the first open's queued removal would clear it while the second
++ * open's close packets are still in flight - those packets would then read as the viewer closing the window that
++ * was just opened.
++ */
++class PacketGuiOpenMarkersTest {
++
++    private static final UUID VIEWER = UUID.randomUUID();
++
++    @Test
++    void keepsTheMarkerUntilEveryOpenHasLiftedItsOwn() {
++        final PacketGuiOpenMarkers markers = new PacketGuiOpenMarkers();
++        markers.enter(VIEWER);
++        markers.enter(VIEWER); // the second open starts before the first open's removal ran
++
++        markers.release(VIEWER); // the first open's removal
++
++        assertTrue(markers.isOpening(VIEWER), "the second open is still in flight");
++
++        markers.release(VIEWER);
++
++        assertFalse(markers.isOpening(VIEWER));
++    }
++
++    /** A removal that arrives after the viewer was cleared must not leave a debt for the next open to pay. */
++    @Test
++    void neverCountsBelowZero() {
++        final PacketGuiOpenMarkers markers = new PacketGuiOpenMarkers();
++        markers.enter(VIEWER);
++        markers.clear(VIEWER);
++        markers.release(VIEWER);
++
++        markers.enter(VIEWER);
++
++        assertTrue(markers.isOpening(VIEWER));
++    }
++
++    @Test
++    void clearsEveryOpenOfAViewerAtOnce() {
++        final PacketGuiOpenMarkers markers = new PacketGuiOpenMarkers();
++        markers.enter(VIEWER);
++        markers.enter(VIEWER);
++
++        markers.clear(VIEWER);
++
++        assertFalse(markers.isOpening(VIEWER));
++    }
++
++    @Test
++    void tracksViewersIndependently() {
++        final PacketGuiOpenMarkers markers = new PacketGuiOpenMarkers();
++        final UUID other = UUID.randomUUID();
++        markers.enter(VIEWER);
++
++        assertFalse(markers.isOpening(other));
++
++        markers.clearAll();
++
++        assertFalse(markers.isOpening(VIEWER));
++    }
++}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c1fc4987e246b39c4a91902b5452d66cd7b777a3
+index 0000000000000000000000000000000000000000..01d3e9336a085e2bb1090655e5c5356232a0c158
 --- /dev/null
 +++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiRenderRequestsTest.java
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,277 @@
 +package me.devnatan.inventoryframework.internal.packet;
 +
 +import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -6739,8 +7238,318 @@ index 0000000000000000000000000000000000000000..c1fc4987e246b39c4a91902b5452d66c
 +        assertTrue(requests.schedule(false, false, PacketGuiRepairScope.NONE, null), "the latch must still open");
 +    }
 +
++    /** Repairs for a window of another size cannot be mapped slot for slot, so they fall back to a full resync. */
++    @Test
++    void absorbsRepairsForAnotherWindowSizeAsAFullResync() {
++        final PacketGuiRenderRequests other = new PacketGuiRenderRequests(54);
++        other.schedule(false, false, PacketGuiRepairScope.TOP_SLOT_AND_CURSOR, click(40, WindowClickType.PICKUP));
++
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++        requests.absorb(other.consume());
++
++        assertTrue(requests.consume().hardResync());
++    }
++
++    /** The session that absorbs a frame renders it itself, so absorbing must not close the latch behind it. */
++    @Test
++    void absorbingLeavesTheLatchOpen() {
++        final PacketGuiRenderRequests other = new PacketGuiRenderRequests(TOP_SIZE);
++        other.schedule(false, true, PacketGuiRepairScope.FULL_WINDOW, null);
++
++        final PacketGuiRenderRequests requests = new PacketGuiRenderRequests(TOP_SIZE);
++        requests.absorb(other.consume());
++
++        assertTrue(requests.schedule(false, false, PacketGuiRepairScope.NONE, null));
++    }
++
 +    private static PacketGuiClick click(int slot, WindowClickType clickType) {
 +        return PacketGuiClick.of(1, slot, 0, clickType);
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSentOpensTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSentOpensTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad1f35e74fe8f3186dbd2c76399c230580f6327b
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiSentOpensTest.java
+@@ -0,0 +1,142 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import com.github.retrooper.packetevents.protocol.player.User;
++import java.util.UUID;
++import me.devnatan.inventoryframework.BukkitViewer;
++import me.devnatan.inventoryframework.ViewType;
++import me.devnatan.inventoryframework.context.IFRenderContext;
++import org.bukkit.entity.Player;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins how an outbound open-screen packet is attributed to the packet GUI that sent it.
++ *
++ * <p>A packet GUI's open packet is queued from the viewer's thread and only seen by the outbound listener once
++ * netty encodes it. By then a newer session may already own the viewer - a view that redirects to another one
++ * of a different size, or a second view frame opening its own GUI in the same tick. Comparing the packet against
++ * the current session's window id alone would read the older packet as a real container opening and tear the
++ * newer session down, leaving the viewer staring at a window nothing answers any more.
++ */
++class PacketGuiSentOpensTest {
++
++    private static final UUID VIEWER = UUID.randomUUID();
++
++    @Test
++    void recognisesAnOpenAPacketGuiSent() {
++        final PacketGuiSentOpens opens = new PacketGuiSentOpens();
++        opens.sent(VIEWER, 101, 5);
++
++        assertEquals(5, opens.observe(VIEWER, 101));
++    }
++
++    @Test
++    void reportsARealContainerAsNotSentByAPacketGui() {
++        final PacketGuiSentOpens opens = new PacketGuiSentOpens();
++        opens.sent(VIEWER, 101, 5);
++
++        assertEquals(PacketGuiSentOpens.NONE, opens.observe(VIEWER, 7));
++        assertEquals(PacketGuiSentOpens.NONE, opens.observe(UUID.randomUUID(), 101));
++    }
++
++    /** Every view frame registers its own listener, and all of them see the same packet. */
++    @Test
++    void answersEveryListenerThatSeesTheSamePacket() {
++        final PacketGuiSentOpens opens = new PacketGuiSentOpens();
++        opens.sent(VIEWER, 101, 5);
++
++        assertEquals(5, opens.observe(VIEWER, 101));
++        assertEquals(5, opens.observe(VIEWER, 101));
++    }
++
++    /**
++     * Packets reach a connection in the order they were sent, so once a later open has been seen, every earlier
++     * one has been seen too and can be forgotten - a third-party window that later reuses such an id is real.
++     */
++    @Test
++    void forgetsEarlierOpensOnceALaterOneWasSeen() {
++        final PacketGuiSentOpens opens = new PacketGuiSentOpens();
++        opens.sent(VIEWER, 101, 5);
++        opens.sent(VIEWER, 102, 6);
++        opens.observe(VIEWER, 101);
++
++        opens.observe(VIEWER, 102);
++
++        assertEquals(PacketGuiSentOpens.NONE, opens.observe(VIEWER, 101));
++    }
++
++    @Test
++    void forgetsAViewerThatLeft() {
++        final PacketGuiSentOpens opens = new PacketGuiSentOpens();
++        opens.sent(VIEWER, 101, 5);
++
++        opens.forget(VIEWER);
++
++        assertEquals(PacketGuiSentOpens.NONE, opens.observe(VIEWER, 101));
++    }
++
++    @Test
++    void handsOutIncreasingSequences() {
++        final PacketGuiSentOpens opens = new PacketGuiSentOpens();
++
++        assertTrue(opens.nextSequence() < opens.nextSequence());
++    }
++
++    /** The race of the finding: the open of the session that was just replaced arrives late. */
++    @Test
++    void doesNotLetAnOlderOpenCloseTheSessionThatReplacedIt() {
++        final PacketGuiSession newer = session(102, 2);
++
++        assertFalse(PacketGuiBackend.supersedes(1, newer));
++    }
++
++    @Test
++    void doesNotLetASessionsOwnOpenCloseIt() {
++        final PacketGuiSession session = session(101, 1);
++
++        assertFalse(PacketGuiBackend.supersedes(1, session));
++    }
++
++    /** Another view frame opened its GUI after this session: that window has the screen now. */
++    @Test
++    void closesASessionWhenANewerPacketGuiTookTheScreen() {
++        final PacketGuiSession older = session(101, 1);
++
++        assertTrue(PacketGuiBackend.supersedes(2, older));
++    }
++
++    /**
++     * Every view frame has its own backend. With a counter each, two frames handed out the same first id, so
++     * clicks on one plugin's GUI were routed to the other plugin's session as well.
++     */
++    @Test
++    void sharesOneWindowIdCounterBetweenBackends() {
++        assertSame(PacketGuiWindowIds.sharedCounter(), PacketGuiWindowIds.sharedCounter());
++
++        final int first = PacketGuiWindowIds.allocate(PacketGuiWindowIds.sharedCounter(), 0);
++        final int second = PacketGuiWindowIds.allocate(PacketGuiWindowIds.sharedCounter(), 0);
++
++        assertNotEquals(first, second);
++    }
++
++    private static PacketGuiSession session(int windowId, long openSequence) {
++        final Player player = mock(Player.class);
++        when(player.getUniqueId()).thenReturn(VIEWER);
++        final PacketViewContainer container =
++                new PacketViewContainer(null, mock(IFRenderContext.class), ViewType.CHEST, 27, "Shop");
++        return new PacketGuiSession(
++                new BukkitViewer(player, null),
++                mock(User.class),
++                windowId,
++                openSequence,
++                container,
++                new PacketViewerWindowTracker());
++    }
++}
+diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowHandoverTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowHandoverTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..83f0b329da15e50a292f628a925999414ddd0f07
+--- /dev/null
++++ b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowHandoverTest.java
+@@ -0,0 +1,132 @@
++package me.devnatan.inventoryframework.internal.packet;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import com.github.retrooper.packetevents.protocol.player.User;
++import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientClickWindow.WindowClickType;
++import java.util.UUID;
++import me.devnatan.inventoryframework.BukkitViewer;
++import me.devnatan.inventoryframework.ViewType;
++import me.devnatan.inventoryframework.context.IFRenderContext;
++import org.bukkit.entity.Player;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Pins what a session hands over when a view of the same shape takes over its window.
++ *
++ * <p>The new session adopts the old one's applied render and diffs against it, so it only resends what changed.
++ * That is only right if it also takes over whatever the old session still owed the client. A click handler that
++ * reopens its view to refresh it is the common case: the client has already predicted the pickup - the clicked
++ * slot is empty on screen - and the repair for it is requested only after the handler returned, against a session
++ * that no longer owns the window. Dropping it leaves the icon missing until something else redraws the slot.
++ */
++class PacketGuiWindowHandoverTest {
++
++    private static final int TOP_SIZE = 27;
++    private static final int WINDOW_ID = 101;
++
++    @Test
++    void takesOverTheRepairsPendingOnTheSessionItReplaces() {
++        final Player player = player();
++        final PacketGuiSession replaced = session(player, WINDOW_ID);
++        replaced.scheduleRender(false, false, PacketGuiRepairScope.TOP_SLOT_AND_CURSOR, topClick(4));
++
++        final PacketGuiSession successor = session(player, WINDOW_ID);
++        successor.adoptWindowStateFrom(replaced);
++
++        final PacketGuiRenderRequests.RenderRequest inherited = successor.consumeRenderRequest();
++        assertTrue(inherited.forcedTopSlotRepairs()[4], "the repair the replaced session still owed");
++    }
++
++    @Test
++    void takesOverAPendingFullResync() {
++        final Player player = player();
++        final PacketGuiSession replaced = session(player, WINDOW_ID);
++        replaced.scheduleRender(false, true, PacketGuiRepairScope.FULL_WINDOW, null);
++
++        final PacketGuiSession successor = session(player, WINDOW_ID);
++        successor.adoptWindowStateFrom(replaced);
++
++        assertTrue(successor.consumeRenderRequest().hardResync());
++    }
++
++    /** The replaced session's own render task still runs; it must find nothing left to do. */
++    @Test
++    void leavesTheReplacedSessionWithNothingPending() {
++        final Player player = player();
++        final PacketGuiSession replaced = session(player, WINDOW_ID);
++        replaced.scheduleRender(false, false, PacketGuiRepairScope.TOP_SLOT_AND_CURSOR, topClick(4));
++
++        session(player, WINDOW_ID).adoptWindowStateFrom(replaced);
++
++        final PacketGuiRenderRequests.RenderRequest left = replaced.consumeRenderRequest();
++        assertFalse(left.hardResync());
++        assertEquals(0, left.forcedTopSlotRepairs().length);
++        assertArrayEquals(new int[0], left.playerSlotRepairs());
++    }
++
++    @Test
++    void routesALateRepairToTheSessionThatTookTheWindowOver() {
++        final Player player = player();
++        final PacketGuiSession replaced = session(player, WINDOW_ID);
++        replaced.closed(true);
++        final PacketGuiSession successor = session(player, WINDOW_ID);
++
++        assertSame(successor, PacketGuiBackend.renderTarget(replaced, successor));
++    }
++
++    /** A different window means the client already shows a fresh screen; the old repair has nothing to fix. */
++    @Test
++    void dropsALateRepairWhenTheSuccessorOpenedItsOwnWindow() {
++        final Player player = player();
++        final PacketGuiSession replaced = session(player, WINDOW_ID);
++        replaced.closed(true);
++
++        assertNull(PacketGuiBackend.renderTarget(replaced, session(player, WINDOW_ID + 1)));
++        assertNull(PacketGuiBackend.renderTarget(replaced, null));
++    }
++
++    @Test
++    void rendersALiveSessionItself() {
++        final PacketGuiSession session = session(player(), WINDOW_ID);
++
++        assertSame(session, PacketGuiBackend.renderTarget(session, session));
++    }
++
++    @Test
++    void rendersNothingForASessionThatIsClosing() {
++        final PacketGuiSession session = session(player(), WINDOW_ID);
++        session.closeRequested(true);
++
++        assertNull(PacketGuiBackend.renderTarget(session, session));
++    }
++
++    private static PacketGuiClick topClick(int slot) {
++        return PacketGuiClick.of(WINDOW_ID, slot, 0, WindowClickType.PICKUP);
++    }
++
++    private static Player player() {
++        final Player player = mock(Player.class);
++        when(player.getUniqueId()).thenReturn(UUID.randomUUID());
++        return player;
++    }
++
++    private static PacketGuiSession session(Player player, int windowId) {
++        final PacketViewContainer container =
++                new PacketViewContainer(null, mock(IFRenderContext.class), ViewType.CHEST, TOP_SIZE, "Shop");
++        return new PacketGuiSession(
++                new BukkitViewer(player, null),
++                mock(User.class),
++                windowId,
++                1,
++                container,
++                new PacketViewerWindowTracker());
 +    }
 +}
 diff --git a/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java b/inventory-framework-platform-bukkit/src/test/java/me/devnatan/inventoryframework/internal/packet/PacketGuiWindowIdsTest.java
