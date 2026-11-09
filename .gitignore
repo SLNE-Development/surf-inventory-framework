@@ -1,5 +1,9 @@
 .gradle
 build/
+
+# The target repository applyPatches generates from upstream + patches/. It carries its own .git, so a
+# `git add -A` here does not skip it - it adds it as a gitlink, with a warning and successfully.
+/inventory-framework/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
